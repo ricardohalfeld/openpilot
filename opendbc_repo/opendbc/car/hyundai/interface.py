@@ -1,8 +1,8 @@
-from opendbc.car import Bus, get_safety_config, structs, uds
+from opendbc.car import Bus, get_safety_config, structs #, uds
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, CAR, DBC, \
                                                    CANFD_UNSUPPORTED_LONGITUDINAL_CAR, \
-                                                   UNSUPPORTED_LONGITUDINAL_CAR, HyundaiSafetyFlags
+                                                   UNSUPPORTED_LONGITUDINAL_CAR, HyundaiSafetyFlags #, CANFD_RADAR_SCC_CAR
 from opendbc.car.hyundai.radar_interface import RADAR_START_ADDR
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.disable_ecu import disable_ecu
@@ -16,6 +16,8 @@ Ecu = structs.CarParams.Ecu
 # Cancel button can sometimes be ACC pause/resume button, main button can also enable on some cars
 ENABLE_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.cancel, ButtonType.mainCruise)
 
+def _flag_names(flags):
+  return [n for n in HyundaiFlags.__members__ if (flags & getattr(HyundaiFlags, n))]
 
 class CarInterface(CarInterfaceBase):
   CarState = CarState
@@ -152,25 +154,37 @@ class CarInterface(CarInterfaceBase):
     if candidate in (CAR.KIA_OPTIMA_H,):
       ret.dashcamOnly = True
 
+    print(f"[HY] car={getattr(candidate, 'name', str(candidate))} "
+      f"OP_long={ret.openpilotLongitudinalControl} "
+      f"alpha_avail={ret.alphaLongitudinalAvailable} "
+      f"flags={_flag_names(ret.flags)}")
+
     return ret
 
   @staticmethod
   def init(CP, can_recv, can_send, communication_control=None):
-    # 0x80 silences response
-    if communication_control is None:
-      communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX, uds.MESSAGE_TYPE.NORMAL])
+    print(f"[HY] init car={getattr(CP, 'carFingerprint', 'UNKNOWN')} "
+      f"OP_long={CP.openpilotLongitudinalControl} "
+      f"flags={_flag_names(CP.flags)}")
+
+    # # 0x80 silences response
+    # if communication_control is None:
+    #   communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX, uds.MESSAGE_TYPE.NORMAL])
+
+    print(f"[HY] disable stock SCC? {CP.openpilotLongitudinalControl}, flags=0x{int(CP.flags):X}")
 
     if CP.openpilotLongitudinalControl and not (CP.flags & (HyundaiFlags.CANFD_CAMERA_SCC | HyundaiFlags.CAMERA_SCC)):
       addr, bus = 0x7d0, CanBus(CP).ECAN if CP.flags & HyundaiFlags.CANFD else 0
       if CP.flags & HyundaiFlags.CANFD_LKA_STEERING.value:
         addr, bus = 0x730, CanBus(CP).ECAN
-      disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=communication_control)
+      print(f"[HY] sending UDS 28 83 01 to 0x{addr:X} on bus {bus}")
+      disable_ecu(can_recv, can_send, bus=bus, addr=addr, com_cont_req=b'\x28\x83\x01')
 
     # for blinkers
     if CP.flags & HyundaiFlags.ENABLE_BLINKERS:
-      disable_ecu(can_recv, can_send, bus=CanBus(CP).ECAN, addr=0x7B1, com_cont_req=communication_control)
+      disable_ecu(can_recv, can_send, bus=CanBus(CP).ECAN, addr=0x7B1, com_cont_req=b'\x28\x83\x01')
 
-  @staticmethod
-  def deinit(CP, can_recv, can_send):
-    communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
-    CarInterface.init(CP, can_recv, can_send, communication_control)
+  # @staticmethod
+  # def deinit(CP, can_recv, can_send):
+  #   communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
+  #   CarInterface.init(CP, can_recv, can_send, communication_control)
