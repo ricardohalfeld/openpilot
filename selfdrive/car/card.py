@@ -90,6 +90,21 @@ def build_eps_fingerprint(CP: car.CarParams) -> dict:
   }
 
 
+def build_long_debug(CP: car.CarParams) -> dict:
+  safety = CP.safetyConfigs[-1] if len(CP.safetyConfigs) else None
+  return {
+    "carFingerprint": CP.carFingerprint,
+    "alphaLongitudinalAvailable": CP.alphaLongitudinalAvailable,
+    "openpilotLongitudinalControl": CP.openpilotLongitudinalControl,
+    "pcmCruise": CP.pcmCruise,
+    "radarUnavailable": CP.radarUnavailable,
+    "flags": CP.flags,
+    "flagsHex": hex(CP.flags),
+    "safetyParam": safety.safetyParam if safety is not None else 0,
+    "safetyParamHex": hex(safety.safetyParam) if safety is not None else "0x0",
+  }
+
+
 class Car:
   CI: CarInterfaceBase
   RI: RadarInterfaceBase
@@ -182,9 +197,12 @@ class Car:
     self.params.put_nonblocking("CarParamsCache", cp_bytes)
     self.params.put_nonblocking("CarParamsPersistent", cp_bytes)
     eps_fingerprint = build_eps_fingerprint(self.CP)
+    long_debug = build_long_debug(self.CP)
     self.params.put_nonblocking("CarEpsFingerprint", eps_fingerprint)
+    self.params.put_nonblocking("CarLongDebug", long_debug)
     cloudlog.warning(f"Car fingerprint: {self.CP.carFingerprint}")
     cloudlog.warning(f"EPS fingerprint: {json.dumps(eps_fingerprint, sort_keys=True)}")
+    cloudlog.warning(f"Long debug: {json.dumps(long_debug, sort_keys=True)}")
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
 

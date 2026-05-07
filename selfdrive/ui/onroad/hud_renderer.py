@@ -32,6 +32,7 @@ class FontSizes:
   max_speed: int = 40
   set_speed: int = 90
   platform: int = 34
+  platform_debug: int = 30
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_current_speed(rect)
-    self._draw_platform(rect)
+    self._draw_platform_debug(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -181,7 +182,7 @@ class HudRenderer(Widget):
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
 
-  def _draw_platform(self, rect: rl.Rectangle) -> None:
+  def _draw_platform_debug(self, rect: rl.Rectangle) -> None:
     if ui_state.CP is None or not ui_state.CP.carFingerprint:
       return
 
@@ -189,3 +190,17 @@ class HudRenderer(Widget):
     platform_text_size = measure_text_cached(self._font_medium, platform_text, FONT_SIZES.platform)
     platform_pos = rl.Vector2(rect.x + rect.width / 2 - platform_text_size.x / 2, 342)
     rl.draw_text_ex(self._font_medium, platform_text, platform_pos, FONT_SIZES.platform, 0, COLORS.WHITE_TRANSLUCENT)
+
+    safety = ui_state.CP.safetyConfigs[-1] if len(ui_state.CP.safetyConfigs) else None
+    safety_param = safety.safetyParam if safety is not None else 0
+    long_text = (
+      f"long a:{int(ui_state.CP.alphaLongitudinalAvailable)} "
+      f"op:{int(ui_state.CP.openpilotLongitudinalControl)} "
+      f"pcm:{int(ui_state.CP.pcmCruise)} "
+      f"rad:{int(ui_state.CP.radarUnavailable)} "
+      f"flags:0x{ui_state.CP.flags:x} "
+      f"sp:0x{safety_param:x}"
+    )
+    long_text_size = measure_text_cached(self._font_medium, long_text, FONT_SIZES.platform_debug)
+    long_pos = rl.Vector2(rect.x + rect.width / 2 - long_text_size.x / 2, 382)
+    rl.draw_text_ex(self._font_medium, long_text, long_pos, FONT_SIZES.platform_debug, 0, COLORS.WHITE_TRANSLUCENT)
