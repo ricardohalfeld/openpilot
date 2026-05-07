@@ -31,6 +31,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 40
   set_speed: int = 90
+  platform: int = 34
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_current_speed(rect)
+    self._draw_platform(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -178,3 +180,12 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_platform(self, rect: rl.Rectangle) -> None:
+    if ui_state.CP is None or not ui_state.CP.carFingerprint:
+      return
+
+    platform_text = ui_state.CP.carFingerprint
+    platform_text_size = measure_text_cached(self._font_medium, platform_text, FONT_SIZES.platform)
+    platform_pos = rl.Vector2(rect.x + rect.width / 2 - platform_text_size.x / 2, 342)
+    rl.draw_text_ex(self._font_medium, platform_text, platform_pos, FONT_SIZES.platform, 0, COLORS.WHITE_TRANSLUCENT)

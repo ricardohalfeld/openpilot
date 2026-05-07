@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 import threading
@@ -55,6 +56,38 @@ def can_comm_callbacks(logcan: messaging.SubSocket, sendcan: messaging.PubSocket
     sendcan.send(can_list_to_can_capnp(msgs, msgtype='sendcan'))
 
   return can_recv, can_send
+
+
+def fw_version_to_string(fw_version: bytes) -> str:
+  try:
+    return bytes(fw_version).decode("utf-8")
+  except UnicodeDecodeError:
+    return bytes(fw_version).hex()
+
+
+def build_eps_fingerprint(CP: car.CarParams) -> dict:
+  eps_fws = []
+  for fw in CP.carFw:
+    if fw.ecu == structs.CarParams.Ecu.eps:
+      eps_fws.append({
+        "fwVersion": fw_version_to_string(fw.fwVersion),
+        "fwVersionHex": bytes(fw.fwVersion).hex(),
+        "address": hex(fw.address),
+        "subAddress": None if fw.subAddress == 0 else fw.subAddress,
+        "responseAddress": hex(fw.responseAddress),
+        "brand": fw.brand,
+        "bus": fw.bus,
+        "logging": fw.logging,
+        "obdMultiplexing": fw.obdMultiplexing,
+      })
+
+  return {
+    "carFingerprint": CP.carFingerprint,
+    "fingerprintSource": str(CP.fingerprintSource),
+    "fuzzyFingerprint": CP.fuzzyFingerprint,
+    "carVin": CP.carVin,
+    "eps": eps_fws,
+  }
 
 
 class Car:
@@ -148,6 +181,10 @@ class Car:
     self.params.put("CarParams", cp_bytes)
     self.params.put_nonblocking("CarParamsCache", cp_bytes)
     self.params.put_nonblocking("CarParamsPersistent", cp_bytes)
+    eps_fingerprint = build_eps_fingerprint(self.CP)
+    self.params.put_nonblocking("CarEpsFingerprint", eps_fingerprint)
+    cloudlog.warning(f"Car fingerprint: {self.CP.carFingerprint}")
+    cloudlog.warning(f"EPS fingerprint: {json.dumps(eps_fingerprint, sort_keys=True)}")
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
 
