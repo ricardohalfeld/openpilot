@@ -12,6 +12,36 @@ platform:         HYUNDAI_CRETA_2ND_GEN
 
 The car installs, boots, and is recognized. It is recognized even without an EPS firmware fingerprint.
 
+## Observed On Device
+
+Captured on `2026-05-08` from the running Comma 3X:
+
+### `CarLongDebug`
+
+```json
+{"carFingerprint": "HYUNDAI_CRETA_2ND_GEN", "alphaLongitudinalAvailable": true, "openpilotLongitudinalControl": false, "pcmCruise": true, "radarUnavailable": true, "flags": 16777600, "flagsHex": "0x1000180", "safetyParam": 0, "safetyParamHex": "0x0"}
+```
+
+### `CarEpsFingerprint`
+
+```json
+{"carFingerprint": "HYUNDAI_CRETA_2ND_GEN", "fingerprintSource": "fw", "fuzzyFingerprint": false, "carVin": "00000000000000000", "eps": [{"fwVersion": "f100535532204d445053204320312e303020312e30312035363330302d42583030302031373233", "fwVersionHex": "f100535532204d445053204320312e303020312e30312035363330302d42583030302031373233", "address": "0x7d4", "subAddress": null, "responseAddress": "0x7dc", "brand": "hyundai", "bus": 1, "logging": false, "obdMultiplexing": true}, {"fwVersion": "f100535532204d445053204320312e303020312e30312035363330302d42583030302031373233", "fwVersionHex": "f100535532204d445053204320312e303020312e30312035363330302d42583030302031373233", "address": "0x7d4", "subAddress": null, "responseAddress": "0x7dc", "brand": "hyundai", "bus": 0, "logging": false, "obdMultiplexing": true}]}
+```
+
+Immediate read:
+
+- The platform is long-capable in principle right now:
+  - `alphaLongitudinalAvailable=true`
+- openpilot long is not currently active:
+  - `openpilotLongitudinalControl=false`
+  - `pcmCruise=true`
+- The current dynamic Hyundai flags decode to:
+  - `0x80` -> `SEND_LFA`
+  - `0x100` -> `USE_FCA`
+  - `0x1000000` -> `HAS_LDA_BUTTON`
+- `safetyParam=0x0` is consistent with long not being enabled yet.
+- `radarUnavailable=true` is important: in this codebase that means openpilot currently does not see a supported radar interface on the expected bus/DBC path, even though radar firmware query responses exist.
+
 ## What Has To Be True
 
 For Hyundai/Kia/Genesis, openpilot longitudinal control is gated by platform eligibility and by a user/developer toggle. The official supported-cars docs describe openpilot Longitudinal Control as an Alpha feature that is behind a toggle on non-release branches.
@@ -65,6 +95,16 @@ pcmCruise: False
 ```
 
 If `alphaLongitudinalAvailable` is false, the platform is being treated as unsupported for long. If `alphaLongitudinalAvailable` is true but `openpilotLongitudinalControl` is false, the toggle is not enabled or was removed by release/availability gating.
+
+For the current Creta device snapshot, we are exactly in the second case:
+
+```text
+alphaLongitudinalAvailable=True
+openpilotLongitudinalControl=False
+pcmCruise=True
+```
+
+So the first unresolved step is still to get the alpha-long toggle to stick and regenerate `CarParams` with long enabled.
 
 ## Best Bet
 
@@ -144,6 +184,11 @@ Action:
 - Compare live CAN bus presence for SCC11/SCC12/SCC13/SCC14/FCA11/FCA12 before enabling long.
 - If stock SCC is camera-based, test `HyundaiFlags.CAMERA_SCC`.
 
+Current evidence that matters here:
+
+- `USE_FCA` is already being set dynamically on this Creta.
+- `radarUnavailable=true` means we should not assume the current runtime view of the radar path is healthy just because the radar ECU answered firmware queries.
+
 ### 3. CRC8 Memory: Probably LKAS, Not The Main Long-Control Gate
 
 The memory about CRC8 may be real, but in this branch `HyundaiFlags.CHECKSUM_CRC8` affects the `LKAS11` steering checksum path:
@@ -206,6 +251,10 @@ Action:
 - Capture whether `0x38d` exists and which bus it is on.
 - Compare stock FCA11/FCA12 counter/checksum behavior.
 - Confirm whether `create_acc_commands()` should use FCA for this platform.
+
+Current evidence:
+
+- The Creta already sets `USE_FCA` dynamically via flags `0x1000180`, so FCA behavior is not hypothetical here; it is part of the active runtime interpretation now.
 
 ### 5. SCC Radar Disable Fails
 
