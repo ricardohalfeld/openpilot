@@ -39,6 +39,25 @@ What that lets us say with more confidence:
 - `HYBRID`, `EV`, and `FCEV` are not active on this car.
 - `radarUnavailable=true` means openpilot currently does not see a supported radar interface on the expected path, even though radar firmware was successfully queried.
 
+## Observed Route Evidence
+
+From route segment `00000003--f3b180ec5b--15`:
+
+- `0x38d` is present: confirms `USE_FCA` behavior.
+- `0x391` is present: confirms `HAS_LDA_BUTTON`.
+- `0x485` is present: confirms `SEND_LFA`.
+- `0x500` is present on active buses: strongly suggests Mando radar point output.
+- SCC traffic is present:
+  - `0x420` `SCC11`
+  - `0x421` `SCC12`
+  - `0x50a` `SCC13`
+  - `0x389` `SCC14`
+- FCA traffic is present:
+  - `0x38a` `FCA11`
+  - `0x483` `FCA12`
+
+This strengthens the case that the Creta is a normal classic Hyundai SCC/FCA platform with active radar-related traffic, even though `CarLongDebug` currently reported `radarUnavailable=true`.
+
 ## Matrix
 
 | Flag | Creta status | Why |
@@ -55,7 +74,7 @@ What that lets us say with more confidence:
 | `CANFD_LKA_STEERING_ALT` | Impossible | Alternate CAN-FD LKA steering layout; not relevant on classic CAN Creta. |
 | `HYBRID` | Impossible for the current car | The current Creta target is an ICE vehicle. If you later target a different Creta hybrid variant, that would be a separate platform question. |
 | `EV` | Impossible for the current car | Same reason: not an EV Creta target. |
-| `MANDO_RADAR` | Unknown | This depends on whether radar point output on bus 1 matches the Mando-radar assumption. Needs live CAN evidence, typically message `0x500` on bus 1. |
+| `MANDO_RADAR` | Likely | `0x500` radar-point traffic is present in the route log, which matches the code comment used for Mando radar detection. |
 | `CANFD` | Impossible | The current platform is not CAN-FD. |
 | `RADAR_SCC` | Possible | This is one of the key open questions for long control. If SCC authority lives in radar rather than camera, this flag may be correct. Needs live behavior evidence. |
 | `CAMERA_SCC` | Possible | Also plausible. Only one of `RADAR_SCC` or `CAMERA_SCC` should describe the production path, and we need CAN behavior to know which one. |
@@ -91,6 +110,7 @@ Flags that feel most likely to matter next:
 
 - `RADAR_SCC` vs `CAMERA_SCC`
 - `CHECKSUM_CRC8` vs `CHECKSUM_6B` vs neither
+- `MANDO_RADAR`
 - `CLUSTER_GEARS` vs `TCU_GEARS`
 - `MIN_STEER_32_MPH`
 - `UNSUPPORTED_LONGITUDINAL` as a temporary gate until long is proven
@@ -100,6 +120,18 @@ Flags already established by the device snapshot:
 - `SEND_LFA`
 - `USE_FCA`
 - `HAS_LDA_BUTTON`
+
+What I would try before changing static flags:
+
+- one careful long test with the current config as-is
+
+Why:
+
+- the platform is already marked long-eligible
+- the route shows real SCC/FCA/LFA activity
+- dynamic flags are already being set correctly
+
+If that first test fails, `MANDO_RADAR` is the strongest next static flag candidate.
 
 ## CRC8 note
 

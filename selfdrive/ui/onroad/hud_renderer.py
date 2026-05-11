@@ -33,11 +33,14 @@ class FontSizes:
   set_speed: int = 90
   platform: int = 34
   platform_debug: int = 30
+  model_stop: int = 54
 
 
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
+  GREEN = rl.Color(98, 214, 120, 255)
+  RED = rl.Color(231, 76, 60, 255)
   DISENGAGED = rl.Color(145, 155, 149, 255)
   OVERRIDE = rl.Color(145, 155, 149, 255)  # Added
   ENGAGED = rl.Color(128, 216, 166, 255)
@@ -119,6 +122,7 @@ class HudRenderer(Widget):
 
     self._draw_current_speed(rect)
     self._draw_platform_debug(rect)
+    self._draw_model_stop_state(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -204,3 +208,13 @@ class HudRenderer(Widget):
     long_text_size = measure_text_cached(self._font_medium, long_text, FONT_SIZES.platform_debug)
     long_pos = rl.Vector2(rect.x + rect.width / 2 - long_text_size.x / 2, 382)
     rl.draw_text_ex(self._font_medium, long_text, long_pos, FONT_SIZES.platform_debug, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_model_stop_state(self, rect: rl.Rectangle) -> None:
+    model = ui_state.sm["modelV2"]
+    should_stop = bool(model.action.shouldStop)
+    label = "Stop" if should_stop else "Go"
+    color = COLORS.RED if should_stop else COLORS.GREEN
+
+    label_size = measure_text_cached(self._font_bold, label, FONT_SIZES.model_stop)
+    label_pos = rl.Vector2(rect.x + rect.width / 2 - label_size.x / 2, 424)
+    rl.draw_text_ex(self._font_bold, label, label_pos, FONT_SIZES.model_stop, 0, color)

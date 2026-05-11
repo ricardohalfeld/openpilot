@@ -42,6 +42,55 @@ Immediate read:
 - `safetyParam=0x0` is consistent with long not being enabled yet.
 - `radarUnavailable=true` is important: in this codebase that means openpilot currently does not see a supported radar interface on the expected bus/DBC path, even though radar firmware query responses exist.
 
+## Observed In Route Log
+
+Captured from route segment `00000003--f3b180ec5b--15`.
+
+Relevant extracted messages:
+
+```text
+addr=0x389 bus=0 count=719 sample=000000000000f100 SCC14
+addr=0x389 bus=130 count=719 sample=000000000000f100 SCC14
+addr=0x38a bus=0 count=726 sample=0000000000000000 FCA11
+addr=0x38a bus=2 count=3 sample=0000000000000000 FCA11
+addr=0x38a bus=130 count=719 sample=0000000000000000 FCA11
+addr=0x38d bus=0 count=719 sample=0000480000000031 FCA indicator / USE_FCA clue
+addr=0x38d bus=130 count=719 sample=0000480000000031 FCA indicator / USE_FCA clue
+addr=0x391 bus=0 count=726 sample=0000000000000000 LDA button / HAS_LDA_BUTTON clue
+addr=0x391 bus=2 count=3 sample=0000000000000000 LDA button / HAS_LDA_BUTTON clue
+addr=0x391 bus=130 count=719 sample=0000000000000000 LDA button / HAS_LDA_BUTTON clue
+addr=0x420 bus=0 count=719 sample=601e00c8fcefff00 SCC11
+addr=0x420 bus=130 count=719 sample=601e00c8fcefff00 SCC11
+addr=0x421 bus=0 count=719 sample=fe0700ffe37f0061 SCC12
+addr=0x421 bus=130 count=719 sample=fe0700ffe37f0061 SCC12
+addr=0x483 bus=0 count=72 sample=1300000000000000 FCA12
+addr=0x483 bus=130 count=72 sample=1300000000000000 FCA12
+addr=0x485 bus=2 count=287 sample=00000000 LFA / SEND_LFA clue
+addr=0x485 bus=128 count=289 sample=00000000 LFA / SEND_LFA clue
+addr=0x485 bus=192 count=1 sample=00000000 LFA / SEND_LFA clue
+addr=0x500 bus=0 count=145 sample=0100000000000eac Mando radar points clue
+addr=0x500 bus=130 count=144 sample=0100000000000eac Mando radar points clue
+addr=0x50a bus=0 count=72 sample=0800000000000000 SCC13
+addr=0x50a bus=130 count=72 sample=0800000000000000 SCC13
+```
+
+Quick interpretation from the route:
+
+- `USE_FCA` is confirmed by the presence of `0x38d`.
+- `HAS_LDA_BUTTON` is confirmed by the presence of `0x391`.
+- `SEND_LFA` is confirmed by the presence of `0x485`.
+- SCC traffic is definitely present:
+  - `SCC11` `0x420`
+  - `SCC12` `0x421`
+  - `SCC13` `0x50a`
+  - `SCC14` `0x389`
+- FCA traffic is definitely present:
+  - `FCA11` `0x38a`
+  - `FCA12` `0x483`
+- `0x500` is present, which strongly suggests Mando radar point output.
+
+This makes the current Creta look like a normal classic Hyundai SCC/FCA platform, not a sparse or unusual one.
+
 ## What Has To Be True
 
 For Hyundai/Kia/Genesis, openpilot longitudinal control is gated by platform eligibility and by a user/developer toggle. The official supported-cars docs describe openpilot Longitudinal Control as an Alpha feature that is behind a toggle on non-release branches.
@@ -125,6 +174,79 @@ Why this is the best first test:
 - The current Hyundai interface already knows how to set `HyundaiSafetyFlags.LONG` and disable the SCC radar for non-camera-SCC openpilot long.
 - This tests the smallest possible change in behavior: enabling long without changing platform flags first.
 
+After the route-log evidence, this is still the right first move. The log added confidence that the platform is a real SCC/FCA Hyundai path, but it did not yet prove that we need a static flag change before trying long.
+
+## Should We Try Long As-Is First?
+
+Yes.
+
+One careful test of long with the current platform config is still the best next step before changing static flags.
+
+Why:
+
+- `alphaLongitudinalAvailable=true` already says the interface considers this platform eligible for long.
+- The route confirms active SCC, FCA, and LFA-related traffic.
+- The current runtime flags already pick up:
+  - `USE_FCA`
+  - `SEND_LFA`
+  - `HAS_LDA_BUTTON`
+- If long works as-is, we avoid baking in unnecessary assumptions.
+
+What to watch for in that first test:
+
+- whether the alpha-long toggle actually sticks
+- whether `openpilotLongitudinalControl=True`
+- whether the car accepts takeover cleanly
+- SCC fault
+- AEB/FCA fault
+- cruise unavailable
+- no accel/decel response
+
+If long does not work as-is, the next most likely static flag to test is `MANDO_RADAR`, not `CAMERA_SCC`.
+
+## Radar Objective
+
+The practical debug objective is not to mirror the camera image on screen. The driver already has direct visual access to the road scene, so a camera-style visualization is low value here.
+
+Radar data is different:
+
+- it can reveal whether the radar is still alive during openpilot long takeover
+- it can show whether target tracks remain available after stock SCC is disabled
+- it can help explain why lead behavior, follow behavior, or takeover faults happen
+- it can tell us whether the current `radarUnavailable=true` state is just a platform/config mismatch
+
+So the useful objective is:
+
+- determine whether radar track data remains available before and after enabling openpilot longitudinal control
+- preserve that observation in notes so future tuning and debugging decisions are based on actual signal availability
+
+## Radar Data We Want To Collect
+
+When testing long, we want to collect and compare radar-related evidence in two states:
+
+1. stock cruise / no openpilot long takeover
+2. openpilot long enabled and attempting takeover
+
+The key questions are:
+
+- does `0x500` through the radar-track range remain present after takeover?
+- do SCC messages disappear, get replaced, or remain active?
+- do radar tracks continue even if stock SCC is disabled?
+- does the car fault at the same moment radar or SCC behavior changes?
+
+The highest-value artifacts to capture are:
+
+- `CarLongDebug`
+- route log with stock behavior
+- route log with openpilot long enabled
+- notes on whether dash faults appear:
+  - SCC fault
+  - AEB/FCA fault
+  - cruise unavailable
+  - no accel/decel response
+
+For radar specifically, the useful observation is not the camera image. It is whether the radar continues to publish track-level object data that openpilot can potentially use or expose in debug UI.
+
 ## Likely Failure Modes
 
 ### 1. Alpha Toggle Is Not Actually Enabled
@@ -188,6 +310,7 @@ Current evidence that matters here:
 
 - `USE_FCA` is already being set dynamically on this Creta.
 - `radarUnavailable=true` means we should not assume the current runtime view of the radar path is healthy just because the radar ECU answered firmware queries.
+- `0x500` radar-point traffic is present in the route log, which makes a radar-backed interpretation more plausible than a camera-SCC-first interpretation.
 
 ### 3. CRC8 Memory: Probably LKAS, Not The Main Long-Control Gate
 
