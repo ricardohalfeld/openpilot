@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import json
 import math
+import time
 from numbers import Number
 
 from cereal import car, log
@@ -25,6 +27,10 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+TORQUE_TUNE_OVERRIDE_PARAM = "TorqueTuneOverride"
+TORQUE_TUNE_OVERRIDE_POLL_INTERVAL = 0.2
+TORQUE_LAT_ACCEL_FACTOR_RANGE = (1.5, 3.5)
+TORQUE_FRICTION_RANGE = (0.0, 0.25)
 
 
 class Controls:
@@ -58,6 +64,10 @@ class Controls:
     elif self.CP.lateralTuning.which() == 'torque':
       self.LaC = LatControlTorque(self.CP, self.CI, DT_CTRL)
 
+    self._torque_override_update_time = 0.0
+    self._torque_override_raw: dict | str | None = None
+    self._torque_override_values: tuple[float, float] | None = None
+
   def update(self):
     self.sm.update(15)
     if self.sm.updated["liveCalibration"]:
@@ -84,6 +94,10 @@ class Controls:
       if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
         self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                            torque_params.frictionCoefficientFiltered)
+      self._update_torque_tune_override()
+      if self._torque_override_values is not None:
+        lat_accel_factor, friction = self._torque_override_values
+        self.LaC.update_live_torque_params(lat_accel_factor, 0.0, friction)
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -137,6 +151,38 @@ class Controls:
         setattr(actuators, p, 0.0)
 
     return CC, lac_log
+
+  def _update_torque_tune_override(self):
+    now = time.monotonic()
+    if now - self._torque_override_update_time < TORQUE_TUNE_OVERRIDE_POLL_INTERVAL:
+      return
+    self._torque_override_update_time = now
+
+    raw_override = self.params.get(TORQUE_TUNE_OVERRIDE_PARAM)
+    if raw_override == self._torque_override_raw:
+      return
+
+    self._torque_override_raw = raw_override
+    self._torque_override_values = None
+    if raw_override is None:
+      return
+
+    try:
+      override = json.loads(raw_override) if isinstance(raw_override, str) else raw_override
+      if not override.get("enabled", False):
+        return
+
+      lat_accel_factor = float(override["latAccelFactor"])
+      friction = float(override["friction"])
+      if not TORQUE_LAT_ACCEL_FACTOR_RANGE[0] <= lat_accel_factor <= TORQUE_LAT_ACCEL_FACTOR_RANGE[1]:
+        raise ValueError("latAccelFactor out of range")
+      if not TORQUE_FRICTION_RANGE[0] <= friction <= TORQUE_FRICTION_RANGE[1]:
+        raise ValueError("friction out of range")
+
+      self._torque_override_values = (lat_accel_factor, friction)
+      cloudlog.warning(f"Using torque tune override: latAccelFactor={lat_accel_factor:.3f}, friction={friction:.3f}")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+      cloudlog.exception(f"Invalid {TORQUE_TUNE_OVERRIDE_PARAM}")
 
   def publish(self, CC, lac_log):
     CS = self.sm['carState']

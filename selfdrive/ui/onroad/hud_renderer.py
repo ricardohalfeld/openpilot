@@ -1,4 +1,5 @@
 import pyray as rl
+from functools import partial
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
@@ -6,11 +7,23 @@ from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets.button import Button, ButtonStyle
 from openpilot.system.ui.widgets import Widget
 
 # Constants
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
+TORQUE_TUNE_OVERRIDE_PARAM = "TorqueTuneOverride"
+TUNE_STEP = {
+  "latAccelFactor": 0.05,
+  "friction": 0.01,
+  "maxLatAccel": 0.10,
+}
+TUNE_LIMITS = {
+  "latAccelFactor": (1.5, 3.5),
+  "friction": (0.0, 0.25),
+  "maxLatAccel": (1.5, 3.5),
+}
 CRUISE_DISABLED_CHAR = '–'
 
 
@@ -23,6 +36,9 @@ class UIConfig:
   set_speed_width_imperial: int = 172
   set_speed_height: int = 204
   wheel_icon_size: int = 144
+  tune_panel_width: int = 520
+  tune_panel_height: int = 252
+  tune_button_size: int = 58
 
 
 @dataclass(frozen=True)
@@ -31,6 +47,8 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 40
   set_speed: int = 90
+  tune_label: int = 30
+  tune_value: int = 34
 
 
 @dataclass(frozen=True)
@@ -71,6 +89,14 @@ class HudRenderer(Widget):
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
 
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
+    self._tune_buttons: dict[tuple[str, int], Button] = {}
+    for key in TUNE_STEP:
+      for direction, text in ((-1, "-"), (1, "+")):
+        self._tune_buttons[(key, direction)] = self._child(Button(text, partial(self._adjust_tune, key, direction),
+                                                                  font_size=38, button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
+                                                                  border_radius=8))
+    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=30,
+                                                 button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=8))
 
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
@@ -116,6 +142,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_current_speed(rect)
+    self._draw_torque_tune_panel(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -178,3 +205,78 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _default_tune_values(self) -> dict[str, float] | None:
+    if ui_state.CP is None or ui_state.CP.lateralTuning.which() != "torque":
+      return None
+
+    torque = ui_state.CP.lateralTuning.torque
+    return {
+      "latAccelFactor": float(torque.latAccelFactor),
+      "friction": float(torque.friction),
+      "maxLatAccel": float(ui_state.CP.maxLateralAccel),
+    }
+
+  def _tune_values(self) -> dict[str, float] | None:
+    values = self._default_tune_values()
+    if values is None:
+      return None
+
+    override = ui_state.params.get(TORQUE_TUNE_OVERRIDE_PARAM)
+    if isinstance(override, dict) and override.get("enabled", False):
+      for key in values:
+        if key in override:
+          values[key] = float(override[key])
+    return values
+
+  def _write_tune_values(self, values: dict[str, float]) -> None:
+    ui_state.params.put_nonblocking(TORQUE_TUNE_OVERRIDE_PARAM, {
+      "enabled": True,
+      "latAccelFactor": round(values["latAccelFactor"], 3),
+      "friction": round(values["friction"], 3),
+      "maxLatAccel": round(values["maxLatAccel"], 3),
+    })
+
+  def _adjust_tune(self, key: str, direction: int) -> None:
+    values = self._tune_values()
+    if values is None:
+      return
+
+    lo, hi = TUNE_LIMITS[key]
+    values[key] = min(max(values[key] + direction * TUNE_STEP[key], lo), hi)
+    self._write_tune_values(values)
+
+  def _reset_tune(self) -> None:
+    ui_state.params.remove(TORQUE_TUNE_OVERRIDE_PARAM)
+
+  def _draw_torque_tune_panel(self, rect: rl.Rectangle) -> None:
+    values = self._tune_values()
+    if values is None:
+      return
+
+    panel_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.tune_panel_width
+    panel_y = rect.y + UI_CONFIG.border_size + UI_CONFIG.button_size + 24
+    panel_rect = rl.Rectangle(panel_x, panel_y, UI_CONFIG.tune_panel_width, UI_CONFIG.tune_panel_height)
+    rl.draw_rectangle_rounded(panel_rect, 0.08, 10, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_rectangle_rounded_lines_ex(panel_rect, 0.08, 10, 3, COLORS.BORDER_TRANSLUCENT)
+
+    rl.draw_text_ex(self._font_medium, "TORQUE TUNE", rl.Vector2(panel_x + 22, panel_y + 16),
+                    FONT_SIZES.tune_label, 0, COLORS.WHITE_TRANSLUCENT)
+    self._tune_reset_button.render(rl.Rectangle(panel_x + UI_CONFIG.tune_panel_width - 86, panel_y + 12, 64, 42))
+
+    rows = (
+      ("LAT", "latAccelFactor"),
+      ("F", "friction"),
+      ("MAX", "maxLatAccel"),
+    )
+    for idx, (label, key) in enumerate(rows):
+      row_y = panel_y + 68 + idx * 58
+      rl.draw_text_ex(self._font_medium, label, rl.Vector2(panel_x + 22, row_y + 12),
+                      FONT_SIZES.tune_label, 0, COLORS.WHITE)
+      value_text = f"{values[key]:.2f}"
+      value_text_size = measure_text_cached(self._font_medium, value_text, FONT_SIZES.tune_value)
+      rl.draw_text_ex(self._font_medium, value_text, rl.Vector2(panel_x + 216 - value_text_size.x / 2, row_y + 10),
+                      FONT_SIZES.tune_value, 0, COLORS.WHITE)
+
+      self._tune_buttons[(key, -1)].render(rl.Rectangle(panel_x + 312, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
+      self._tune_buttons[(key, 1)].render(rl.Rectangle(panel_x + 390, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
