@@ -31,6 +31,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 40
   set_speed: int = 90
+  torque_override: int = 34
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_current_speed(rect)
+    self._draw_torque_override(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -178,3 +180,13 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_torque_override(self, rect: rl.Rectangle) -> None:
+    if ui_state.CP is None or ui_state.CP.lateralTuning.which() != "torque":
+      return
+
+    torque = ui_state.CP.lateralTuning.torque
+    override_text = f"LAT {torque.latAccelFactor:.2f} MAX {ui_state.CP.maxLateralAccel:.2f} F {torque.friction:.2f}"
+    override_text_size = measure_text_cached(self._font_medium, override_text, FONT_SIZES.torque_override)
+    override_pos = rl.Vector2(rect.x + rect.width / 2 - override_text_size.x / 2, 342)
+    rl.draw_text_ex(self._font_medium, override_text, override_pos, FONT_SIZES.torque_override, 0, COLORS.WHITE_TRANSLUCENT)
