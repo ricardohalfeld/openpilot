@@ -1,4 +1,5 @@
 import pyray as rl
+import json
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
@@ -105,6 +106,7 @@ class HudRenderer(Widget):
     self._set_speed_changed_time: float = 0
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self.radar_debug_text: str = ""
     self._engaged: bool = False
 
     self._can_draw_top_icons = True
@@ -168,6 +170,33 @@ class HudRenderer(Widget):
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
+    self._update_radar_debug()
+
+  def _update_radar_debug(self) -> None:
+    sm = ui_state.sm
+    if not sm.updated["customReservedRawData0"]:
+      return
+
+    try:
+      data = json.loads(bytes(sm["customReservedRawData0"]).decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError):
+      return
+
+    if data.get("type") != "cretaRadarDebug":
+      return
+
+    scc_modes = {0: "off", 1: "enabled", 2: "override", 3: "fault"}
+    self.radar_debug_text = (
+      f"RAD obj={data.get('obj_valid', 0)} "
+      f"d={data.get('obj_dist_m', 0.0):.1f}m "
+      f"v={data.get('obj_rel_speed_ms', 0.0):+.1f} "
+      f"y={data.get('obj_lat_pos_m', 0.0):+.1f} "
+      f"gap={data.get('scc_obj_gap', 0)} "
+      f"scc={scc_modes.get(data.get('scc_acc_mode', 0), data.get('scc_acc_mode', 0))} "
+      f"info={data.get('scc_info_display', 0)} "
+      f"fcw={data.get('fca_warn', 0)} "
+      f"ttc={data.get('fca_ttc_s', 0.0):.1f}s"
+    )
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -178,6 +207,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_steering_wheel(rect)
+    self._draw_radar_debug(rect)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
@@ -262,6 +292,16 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+  def _draw_radar_debug(self, rect: rl.Rectangle) -> None:
+    if not self.radar_debug_text:
+      return
+
+    font_size = 34
+    text_size = measure_text_cached(self._font_medium, self.radar_debug_text, font_size)
+    x = rect.x + rect.width / 2 - text_size.x / 2
+    y = rect.y + 16
+    rl.draw_text_ex(self._font_medium, self.radar_debug_text, rl.Vector2(x, y), font_size, 0, COLORS.WHITE_TRANSLUCENT)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

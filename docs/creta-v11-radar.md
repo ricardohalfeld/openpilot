@@ -265,3 +265,28 @@ Suggested next validation step:
 - Add a small logger/HUD overlay for the SCC fields above.
 - Record whether `FCA11`, `FRT_RADAR11`, and `0x500..0x51f` are actually present on the Creta route.
 - Only after confirming `0x500` radar tracks exist should we consider enabling `MANDO_RADAR` for this platform.
+
+## Implemented validation overlay
+
+This branch publishes a Creta radar debug payload from `card` on `customReservedRawData0` at 10 Hz and renders it as a compact HUD line.
+
+Displayed fields:
+
+- `SCC11.ObjValid`
+- `SCC11.ACC_ObjDist`
+- `SCC11.ACC_ObjRelSpd`
+- `SCC11.ACC_ObjLatPos`
+- `SCC14.ObjGap`
+- `SCC12.ACCMode`
+- `SCC11.SCCInfoDisplay`
+- `FCA11.CF_VSM_Warn`
+- `FCA11.FCA_TimetoCollision`
+
+Logged-only presence flags in the same payload:
+
+- `scc11_seen`
+- `scc12_seen`
+- `scc14_seen`
+- `fca11_seen`
+- `frt_radar11_seen`
+- `raw_mando_front_seen`

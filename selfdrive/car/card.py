@@ -2,6 +2,7 @@
 import os
 import time
 import threading
+import json
 
 import cereal.messaging as messaging
 
@@ -65,9 +66,17 @@ class Car:
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'])
-    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
+    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks', 'customReservedRawData0'])
 
     self.can_rcv_cum_timeout_counter = 0
+    self.creta_radar_seen = {
+      "scc11_seen": False,
+      "scc12_seen": False,
+      "scc14_seen": False,
+      "fca11_seen": False,
+      "frt_radar11_seen": False,
+      "raw_mando_front_seen": False,
+    }
 
     self.CC_prev = car.CarControl.new_message()
     self.CS_prev = car.CarState.new_message()
@@ -162,6 +171,7 @@ class Car:
 
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
+    self._update_creta_radar_seen(can_list)
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
@@ -190,6 +200,16 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def _update_creta_radar_seen(self, can_list):
+    for _, frames in can_list:
+      for address, _, src in frames:
+        self.creta_radar_seen["scc11_seen"] |= address == 0x420
+        self.creta_radar_seen["scc12_seen"] |= address == 0x421
+        self.creta_radar_seen["scc14_seen"] |= address == 0x389
+        self.creta_radar_seen["fca11_seen"] |= address == 0x38d
+        self.creta_radar_seen["frt_radar11_seen"] |= address == 0x4a2
+        self.creta_radar_seen["raw_mando_front_seen"] |= src == 1 and 0x500 <= address <= 0x51f
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None):
     """carState and carParams publish loop"""
@@ -220,6 +240,18 @@ class Car:
       tracks_msg.valid = not any(RD.errors.to_dict().values())
       tracks_msg.liveTracks = RD
       self.pm.send('liveTracks', tracks_msg)
+
+    if self.sm.frame % 10 == 0:
+      creta_radar_debug = getattr(self.CI.CS, "creta_radar_debug", None)
+      if creta_radar_debug:
+        radar_msg = messaging.new_message('customReservedRawData0')
+        radar_msg.valid = True
+        radar_msg.customReservedRawData0 = json.dumps({
+          "type": "cretaRadarDebug",
+          **creta_radar_debug,
+          **self.creta_radar_seen,
+        }, separators=(",", ":")).encode("utf-8")
+        self.pm.send('customReservedRawData0', radar_msg)
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl):
     """control update loop, driven by carControl"""

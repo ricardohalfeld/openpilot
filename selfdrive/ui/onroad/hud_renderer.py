@@ -1,4 +1,5 @@
 import pyray as rl
+import json
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
@@ -65,6 +66,7 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self.radar_debug_text: str = ""
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -99,6 +101,33 @@ class HudRenderer(Widget):
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
+    self._update_radar_debug()
+
+  def _update_radar_debug(self) -> None:
+    sm = ui_state.sm
+    if not sm.updated["customReservedRawData0"]:
+      return
+
+    try:
+      data = json.loads(bytes(sm["customReservedRawData0"]).decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError):
+      return
+
+    if data.get("type") != "cretaRadarDebug":
+      return
+
+    scc_modes = {0: "off", 1: "enabled", 2: "override", 3: "fault"}
+    self.radar_debug_text = (
+      f"RAD obj={data.get('obj_valid', 0)} "
+      f"d={data.get('obj_dist_m', 0.0):.1f}m "
+      f"v={data.get('obj_rel_speed_ms', 0.0):+.1f} "
+      f"y={data.get('obj_lat_pos_m', 0.0):+.1f} "
+      f"gap={data.get('scc_obj_gap', 0)} "
+      f"scc={scc_modes.get(data.get('scc_acc_mode', 0), data.get('scc_acc_mode', 0))} "
+      f"info={data.get('scc_info_display', 0)} "
+      f"fcw={data.get('fca_warn', 0)} "
+      f"ttc={data.get('fca_ttc_s', 0.0):.1f}s"
+    )
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -116,6 +145,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_current_speed(rect)
+    self._draw_radar_debug(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -178,3 +208,13 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_radar_debug(self, rect: rl.Rectangle) -> None:
+    if not self.radar_debug_text:
+      return
+
+    font_size = 34
+    text_size = measure_text_cached(self._font_medium, self.radar_debug_text, font_size)
+    x = rect.x + rect.width / 2 - text_size.x / 2
+    y = rect.y + UI_CONFIG.header_height + 6
+    rl.draw_text_ex(self._font_medium, self.radar_debug_text, rl.Vector2(x, y), font_size, 0, COLORS.WHITE_TRANSLUCENT)
