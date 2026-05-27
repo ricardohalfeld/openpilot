@@ -36,9 +36,9 @@ class UIConfig:
   set_speed_width_imperial: int = 172
   set_speed_height: int = 204
   wheel_icon_size: int = 144
-  tune_panel_width: int = 520
-  tune_panel_height: int = 252
-  tune_button_size: int = 58
+  tune_panel_width: int = 960
+  tune_panel_height: int = 500
+  tune_button_size: int = 104
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,8 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 40
   set_speed: int = 90
-  tune_label: int = 30
-  tune_value: int = 34
+  tune_label: int = 48
+  tune_value: int = 58
 
 
 @dataclass(frozen=True)
@@ -93,9 +93,9 @@ class HudRenderer(Widget):
     for key in TUNE_STEP:
       for direction, text in ((-1, "-"), (1, "+")):
         self._tune_buttons[(key, direction)] = self._child(Button(text, partial(self._adjust_tune, key, direction),
-                                                                  font_size=38, button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
+                                                                  font_size=64, button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
                                                                   border_radius=8))
-    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=30,
+    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=44,
                                                  button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=8))
 
   def _update_state(self) -> None:
@@ -260,9 +260,9 @@ class HudRenderer(Widget):
     rl.draw_rectangle_rounded(panel_rect, 0.08, 10, COLORS.BLACK_TRANSLUCENT)
     rl.draw_rectangle_rounded_lines_ex(panel_rect, 0.08, 10, 3, COLORS.BORDER_TRANSLUCENT)
 
-    rl.draw_text_ex(self._font_medium, "TORQUE TUNE", rl.Vector2(panel_x + 22, panel_y + 16),
+    rl.draw_text_ex(self._font_medium, "TORQUE TUNE", rl.Vector2(panel_x + 36, panel_y + 30),
                     FONT_SIZES.tune_label, 0, COLORS.WHITE_TRANSLUCENT)
-    self._tune_reset_button.render(rl.Rectangle(panel_x + UI_CONFIG.tune_panel_width - 86, panel_y + 12, 64, 42))
+    self._tune_reset_button.render(rl.Rectangle(panel_x + UI_CONFIG.tune_panel_width - 168, panel_y + 24, 128, 78))
 
     rows = (
       ("LAT", "latAccelFactor"),
@@ -270,13 +270,13 @@ class HudRenderer(Widget):
       ("MAX", "maxLatAccel"),
     )
     for idx, (label, key) in enumerate(rows):
-      row_y = panel_y + 68 + idx * 58
-      rl.draw_text_ex(self._font_medium, label, rl.Vector2(panel_x + 22, row_y + 12),
+      row_y = panel_y + 132 + idx * 112
+      rl.draw_text_ex(self._font_medium, label, rl.Vector2(panel_x + 40, row_y + 26),
                       FONT_SIZES.tune_label, 0, COLORS.WHITE)
       value_text = f"{values[key]:.2f}"
       value_text_size = measure_text_cached(self._font_medium, value_text, FONT_SIZES.tune_value)
-      rl.draw_text_ex(self._font_medium, value_text, rl.Vector2(panel_x + 216 - value_text_size.x / 2, row_y + 10),
+      rl.draw_text_ex(self._font_medium, value_text, rl.Vector2(panel_x + 392 - value_text_size.x / 2, row_y + 22),
                       FONT_SIZES.tune_value, 0, COLORS.WHITE)
 
-      self._tune_buttons[(key, -1)].render(rl.Rectangle(panel_x + 312, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
-      self._tune_buttons[(key, 1)].render(rl.Rectangle(panel_x + 390, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
+      self._tune_buttons[(key, -1)].render(rl.Rectangle(panel_x + 608, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
+      self._tune_buttons[(key, 1)].render(rl.Rectangle(panel_x + 768, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
