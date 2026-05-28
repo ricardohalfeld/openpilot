@@ -66,7 +66,7 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
-    self.radar_debug_text: str = ""
+    self.radar_debug_text: str = "radar"
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -210,9 +210,6 @@ class HudRenderer(Widget):
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
 
   def _draw_radar_debug(self, rect: rl.Rectangle) -> None:
-    if not self.radar_debug_text:
-      return
-
     font_size = 34
     text_size = measure_text_cached(self._font_medium, self.radar_debug_text, font_size)
     x = rect.x + rect.width / 2 - text_size.x / 2

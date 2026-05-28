@@ -270,7 +270,11 @@ Suggested next validation step:
 
 This branch publishes a Creta radar debug payload from `card` on `customReservedRawData0` at 10 Hz and renders it as a compact HUD line.
 
-Displayed fields:
+The HUD now also draws the word `radar` before any debug payload is received. This is a simple visual marker to confirm the radar HUD code is present and running.
+
+The branch uses the same opendbc submodule commit as the base `creta-v11` branch so car recognition stays aligned with the other Creta v11 branches. Detailed SCC/FCA parsed values are optional; when they are not available from `CarState`, the payload still includes raw CAN presence flags gathered in `card.py`.
+
+Displayed fields when detailed parsed SCC/FCA data is available:
 
 - `SCC11.ObjValid`
 - `SCC11.ACC_ObjDist`
@@ -282,7 +286,7 @@ Displayed fields:
 - `FCA11.CF_VSM_Warn`
 - `FCA11.FCA_TimetoCollision`
 
-Logged-only presence flags in the same payload:
+Presence flags in the same payload:
 
 - `scc11_seen`
 - `scc12_seen`

@@ -106,7 +106,7 @@ class HudRenderer(Widget):
     self._set_speed_changed_time: float = 0
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
-    self.radar_debug_text: str = ""
+    self.radar_debug_text: str = "radar"
     self._engaged: bool = False
 
     self._can_draw_top_icons = True
@@ -294,9 +294,6 @@ class HudRenderer(Widget):
     )
 
   def _draw_radar_debug(self, rect: rl.Rectangle) -> None:
-    if not self.radar_debug_text:
-      return
-
     font_size = 34
     text_size = measure_text_cached(self._font_medium, self.radar_debug_text, font_size)
     x = rect.x + rect.width / 2 - text_size.x / 2

@@ -242,13 +242,13 @@ class Car:
       self.pm.send('liveTracks', tracks_msg)
 
     if self.sm.frame % 10 == 0:
-      creta_radar_debug = getattr(self.CI.CS, "creta_radar_debug", None)
-      if creta_radar_debug:
+      creta_radar_debug = getattr(self.CI.CS, "creta_radar_debug", {})
+      if creta_radar_debug is not None:
         radar_msg = messaging.new_message('customReservedRawData0')
         radar_msg.valid = True
         radar_msg.customReservedRawData0 = json.dumps({
           "type": "cretaRadarDebug",
-          **creta_radar_debug,
+          **(creta_radar_debug or {}),
           **self.creta_radar_seen,
         }, separators=(",", ":")).encode("utf-8")
         self.pm.send('customReservedRawData0', radar_msg)
