@@ -29,6 +29,7 @@ class UIConfig:
 class FontSizes:
   current_speed: int = 176
   speed_unit: int = 66
+  speed_source: int = 38
   max_speed: int = 40
   set_speed: int = 90
 
@@ -64,6 +65,7 @@ class HudRenderer(Widget):
     self.is_cruise_available: bool = True
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
+    self.speed_source: str = "ODOMETRY"
     self.v_ego_cluster_seen: bool = False
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -97,10 +99,12 @@ class HudRenderer(Widget):
     gps_location = sm["gpsLocationExternal"]
     if sm.alive["gpsLocationExternal"] and sm.valid["gpsLocationExternal"] and gps_location.hasFix:
       v_ego = gps_location.speed
+      self.speed_source = "GPS"
     else:
       v_ego_cluster = car_state.vEgoCluster
       self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
       v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+      self.speed_source = "ODOMETRY"
 
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
@@ -183,3 +187,7 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+    source_text_size = measure_text_cached(self._font_medium, self.speed_source, FONT_SIZES.speed_source)
+    source_pos = rl.Vector2(rect.x + rect.width / 2 - source_text_size.x / 2, 348 - source_text_size.y / 2)
+    rl.draw_text_ex(self._font_medium, self.speed_source, source_pos, FONT_SIZES.speed_source, 0, COLORS.WHITE_TRANSLUCENT)
