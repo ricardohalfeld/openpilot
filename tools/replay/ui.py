@@ -10,6 +10,11 @@ import pyray as rl
 import cereal.messaging as messaging
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
+from openpilot.selfdrive.controls.lib.latcontrol_torque import (
+  INTERP_SPEEDS as LAT_TORQUE_INTERP_SPEEDS,
+  KI as LAT_TORQUE_KI,
+  KP_INTERP as LAT_TORQUE_KP_INTERP,
+)
 from openpilot.tools.replay.lib.ui_helpers import (
   UP,
   BLACK,
@@ -176,12 +181,18 @@ def ui_thread(addr):
     intrinsic_matrix = camera.fcam.intrinsics
 
     w = sm['controlsState'].lateralControlState.which()
+    torque_state = None
     if w == 'lqrStateDEPRECATED':
       angle_steers_k = sm['controlsState'].lateralControlState.lqrStateDEPRECATED.steeringAngleDeg
     elif w == 'indiState':
       angle_steers_k = sm['controlsState'].lateralControlState.indiState.steeringAngleDeg
+    elif w == 'torqueState':
+      torque_state = sm['controlsState'].lateralControlState.torqueState
+      angle_steers_k = np.inf
     else:
       angle_steers_k = np.inf
+
+    current_torque_kp = float(np.interp(sm['carState'].vEgo, LAT_TORQUE_INTERP_SPEEDS, LAT_TORQUE_KP_INTERP))
 
     plot_arr[:-1] = plot_arr[1:]
     plot_arr[-1, name_to_arr_idx['angle_steers']] = sm['carState'].steeringAngleDeg
@@ -248,7 +259,16 @@ def ui_thread(addr):
       ("ANGLE OFFSET (INSTANT): " + str(round(sm['liveParameters'].angleOffsetDeg, 2)) + " deg", YELLOW),
       ("STIFFNESS: " + str(round(sm['liveParameters'].stiffnessFactor * 100.0, 2)) + " %", YELLOW),
       ("STEER RATIO: " + str(round(sm['liveParameters'].steerRatio, 2)), YELLOW),
+      None,
+      ("TORQUE PID KP: " + str(round(current_torque_kp, 3)), YELLOW),
+      ("TORQUE PID KI: " + str(round(LAT_TORQUE_KI, 3)), YELLOW),
     ]
+
+    if torque_state is not None:
+      lines += [
+        ("TORQUE PID ERROR: " + str(round(torque_state.error, 3)), YELLOW),
+        ("TORQUE PID P/I/F: " + str(round(torque_state.p, 3)) + " / " + str(round(torque_state.i, 3)) + " / " + str(round(torque_state.f, 3)), YELLOW),
+      ]
 
     for i, line in enumerate(lines):
       if line is not None:
