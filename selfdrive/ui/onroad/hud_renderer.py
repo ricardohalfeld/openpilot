@@ -12,6 +12,7 @@ from openpilot.system.ui.widgets import Widget
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
+GPS_VALUE_NA = "--"
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class FontSizes:
   current_speed: int = 176
   speed_unit: int = 66
   speed_source: int = 38
+  gps_debug: int = 30
   max_speed: int = 40
   set_speed: int = 90
 
@@ -66,6 +68,8 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.speed_source: str = "ODOMETRY"
+    self.gps_fix_line: str = "GPS A:0 V:0 F:0 SAT:--"
+    self.gps_error_line: str = "H:--m V:--m SPD±--m/s BRG±--° SIG:n/a"
     self.v_ego_cluster_seen: bool = False
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -74,6 +78,31 @@ class HudRenderer(Widget):
 
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
 
+  @staticmethod
+  def _fmt_gps_value(value: float, unit: str, precision: int = 1) -> str:
+    if value <= 0.0:
+      return f"{GPS_VALUE_NA}{unit}"
+    return f"{value:.{precision}f}{unit}"
+
+  def _update_gps_debug(self) -> None:
+    sm = ui_state.sm
+    gps_location = sm["gpsLocationExternal"]
+    gps_alive = sm.alive["gpsLocationExternal"]
+    gps_valid = sm.valid["gpsLocationExternal"]
+    gps_fix = gps_alive and gps_valid and gps_location.hasFix
+
+    self.gps_fix_line = (
+      f"GPS A:{int(gps_alive)} V:{int(gps_valid)} F:{int(gps_fix)} "
+      f"SAT:{gps_location.satelliteCount if gps_alive else GPS_VALUE_NA}"
+    )
+    self.gps_error_line = (
+      f"H:{self._fmt_gps_value(gps_location.horizontalAccuracy, 'm')} "
+      f"V:{self._fmt_gps_value(gps_location.verticalAccuracy, 'm')} "
+      f"SPD±{self._fmt_gps_value(gps_location.speedAccuracy, 'm/s')} "
+      f"BRG±{self._fmt_gps_value(gps_location.bearingAccuracyDeg, '°')} "
+      "SIG:n/a"
+    )
+
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
     sm = ui_state.sm
@@ -81,6 +110,9 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self.speed_source = "ODOMETRY"
+      self.gps_fix_line = "GPS A:0 V:0 F:0 SAT:--"
+      self.gps_error_line = "H:--m V:--m SPD±--m/s BRG±--° SIG:n/a"
       return
 
     controls_state = sm['controlsState']
@@ -96,6 +128,7 @@ class HudRenderer(Widget):
     if self.is_cruise_set and not ui_state.is_metric:
       self.set_speed *= KM_TO_MILE
 
+    self._update_gps_debug()
     gps_location = sm["gpsLocationExternal"]
     if sm.alive["gpsLocationExternal"] and sm.valid["gpsLocationExternal"] and gps_location.hasFix:
       v_ego = gps_location.speed
@@ -191,3 +224,11 @@ class HudRenderer(Widget):
     source_text_size = measure_text_cached(self._font_medium, self.speed_source, FONT_SIZES.speed_source)
     source_pos = rl.Vector2(rect.x + rect.width / 2 - source_text_size.x / 2, 348 - source_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, self.speed_source, source_pos, FONT_SIZES.speed_source, 0, COLORS.WHITE_TRANSLUCENT)
+
+    gps_fix_text_size = measure_text_cached(self._font_medium, self.gps_fix_line, FONT_SIZES.gps_debug)
+    gps_fix_pos = rl.Vector2(rect.x + rect.width / 2 - gps_fix_text_size.x / 2, 390 - gps_fix_text_size.y / 2)
+    rl.draw_text_ex(self._font_medium, self.gps_fix_line, gps_fix_pos, FONT_SIZES.gps_debug, 0, COLORS.WHITE_TRANSLUCENT)
+
+    gps_error_text_size = measure_text_cached(self._font_medium, self.gps_error_line, FONT_SIZES.gps_debug)
+    gps_error_pos = rl.Vector2(rect.x + rect.width / 2 - gps_error_text_size.x / 2, 426 - gps_error_text_size.y / 2)
+    rl.draw_text_ex(self._font_medium, self.gps_error_line, gps_error_pos, FONT_SIZES.gps_debug, 0, COLORS.WHITE_TRANSLUCENT)
