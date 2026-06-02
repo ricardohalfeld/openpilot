@@ -18,7 +18,7 @@ GPS_VALUE_NA = "--"
 
 @dataclass(frozen=True)
 class UIConfig:
-  header_height: int = 300
+  header_height: int = 560
   border_size: int = 30
   button_size: int = 192
   set_speed_width_metric: int = 200
@@ -31,8 +31,9 @@ class UIConfig:
 class FontSizes:
   current_speed: int = 176
   speed_unit: int = 66
-  speed_source: int = 38
-  gps_debug: int = 28
+  speed_source: int = 42
+  gps_debug: int = 44
+  gps_debug_small: int = 36
   max_speed: int = 40
   set_speed: int = 90
 
@@ -51,7 +52,7 @@ class Colors:
   BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
   BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
-  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 114)
+  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 165)
   HEADER_GRADIENT_END = rl.BLANK
 
 
@@ -69,9 +70,10 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.speed_source: str = "ODOMETRY"
-    self.gps_external_line: str = "EXT age:never A:0 V:0 F:0 SAT:-- H:--m S±--m/s"
-    self.gps_base_line: str = "GPS age:never A:0 V:0 F:0 SAT:-- H:--m S±--m/s"
-    self.gps_timestamp_line: str = "EXT ts:-- GPS ts:-- SIG:n/a"
+    self.gps_external_line: str = "EXT never A0 V0 F0 SAT--"
+    self.gps_base_line: str = "GPS never A0 V0 F0 SAT--"
+    self.gps_error_line: str = "EXT H-- S--   GPS H-- S--"
+    self.gps_timestamp_line: str = "TS E-- G--   SIG n/a"
     self.v_ego_cluster_seen: bool = False
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -81,9 +83,9 @@ class HudRenderer(Widget):
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
 
   @staticmethod
-  def _fmt_gps_value(value: float, unit: str, precision: int = 1) -> str:
+  def _fmt_gps_value(value: float, unit: str = "", precision: int = 1) -> str:
     if value <= 0.0:
-      return f"{GPS_VALUE_NA}{unit}"
+      return GPS_VALUE_NA
     return f"{value:.{precision}f}{unit}"
 
   @staticmethod
@@ -111,7 +113,7 @@ class HudRenderer(Widget):
     sm = ui_state.sm
     return sm.alive[service] and sm.valid[service] and sm[service].hasFix
 
-  def _gps_service_line(self, label: str, service: str) -> str:
+  def _gps_service_status_line(self, label: str, service: str) -> str:
     sm = ui_state.sm
     gps_location = sm[service]
     gps_alive = sm.alive[service]
@@ -120,19 +122,26 @@ class HudRenderer(Widget):
     sat_count = gps_location.satelliteCount if gps_alive else GPS_VALUE_NA
 
     return (
-      f"{label} age:{self._service_age(sm, service)} "
-      f"A:{int(gps_alive)} V:{int(gps_valid)} F:{int(gps_fix)} SAT:{sat_count} "
-      f"H:{self._fmt_gps_value(gps_location.horizontalAccuracy, 'm')} "
-      f"S±{self._fmt_gps_value(gps_location.speedAccuracy, 'm/s')}"
+      f"{label} {self._service_age(sm, service)} "
+      f"A{int(gps_alive)} V{int(gps_valid)} F{int(gps_fix)} SAT{sat_count}"
     )
 
   def _update_gps_debug(self) -> None:
     sm = ui_state.sm
-    self.gps_external_line = self._gps_service_line("EXT", "gpsLocationExternal")
-    self.gps_base_line = self._gps_service_line("GPS", "gpsLocation")
+    gps_external = sm["gpsLocationExternal"]
+    gps_base = sm["gpsLocation"]
+
+    self.gps_external_line = self._gps_service_status_line("EXT", "gpsLocationExternal")
+    self.gps_base_line = self._gps_service_status_line("GPS", "gpsLocation")
+    self.gps_error_line = (
+      f"EXT H{self._fmt_gps_value(gps_external.horizontalAccuracy)} "
+      f"S{self._fmt_gps_value(gps_external.speedAccuracy)}   "
+      f"GPS H{self._fmt_gps_value(gps_base.horizontalAccuracy)} "
+      f"S{self._fmt_gps_value(gps_base.speedAccuracy)}"
+    )
     self.gps_timestamp_line = (
-      f"EXT ts:{self._fmt_timestamp_age(sm['gpsLocationExternal'])} "
-      f"GPS ts:{self._fmt_timestamp_age(sm['gpsLocation'])} SIG:n/a"
+      f"TS E{self._fmt_timestamp_age(gps_external)} "
+      f"G{self._fmt_timestamp_age(gps_base)}   SIG n/a"
     )
 
   def _update_state(self) -> None:
@@ -143,9 +152,10 @@ class HudRenderer(Widget):
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
       self.speed_source = "ODOMETRY"
-      self.gps_external_line = "EXT age:never A:0 V:0 F:0 SAT:-- H:--m S±--m/s"
-      self.gps_base_line = "GPS age:never A:0 V:0 F:0 SAT:-- H:--m S±--m/s"
-      self.gps_timestamp_line = "EXT ts:-- GPS ts:-- SIG:n/a"
+      self.gps_external_line = "EXT never A0 V0 F0 SAT--"
+      self.gps_base_line = "GPS never A0 V0 F0 SAT--"
+      self.gps_error_line = "EXT H-- S--   GPS H-- S--"
+      self.gps_timestamp_line = "TS E-- G--   SIG n/a"
       return
 
     controls_state = sm['controlsState']
@@ -244,6 +254,11 @@ class HudRenderer(Widget):
       set_speed_color,
     )
 
+  def _draw_text_centered(self, rect: rl.Rectangle, text: str, y: float, font_size: int, color: rl.Color) -> None:
+    text_size = measure_text_cached(self._font_medium, text, font_size)
+    text_pos = rl.Vector2(rect.x + rect.width / 2 - text_size.x / 2, y - text_size.y / 2)
+    rl.draw_text_ex(self._font_medium, text, text_pos, font_size, 0, color)
+
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
     speed_text = str(round(self.speed))
@@ -256,18 +271,8 @@ class HudRenderer(Widget):
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
 
-    source_text_size = measure_text_cached(self._font_medium, self.speed_source, FONT_SIZES.speed_source)
-    source_pos = rl.Vector2(rect.x + rect.width / 2 - source_text_size.x / 2, 348 - source_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, self.speed_source, source_pos, FONT_SIZES.speed_source, 0, COLORS.WHITE_TRANSLUCENT)
-
-    gps_external_text_size = measure_text_cached(self._font_medium, self.gps_external_line, FONT_SIZES.gps_debug)
-    gps_external_pos = rl.Vector2(rect.x + rect.width / 2 - gps_external_text_size.x / 2, 388 - gps_external_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, self.gps_external_line, gps_external_pos, FONT_SIZES.gps_debug, 0, COLORS.WHITE_TRANSLUCENT)
-
-    gps_base_text_size = measure_text_cached(self._font_medium, self.gps_base_line, FONT_SIZES.gps_debug)
-    gps_base_pos = rl.Vector2(rect.x + rect.width / 2 - gps_base_text_size.x / 2, 422 - gps_base_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, self.gps_base_line, gps_base_pos, FONT_SIZES.gps_debug, 0, COLORS.WHITE_TRANSLUCENT)
-
-    gps_timestamp_text_size = measure_text_cached(self._font_medium, self.gps_timestamp_line, FONT_SIZES.gps_debug)
-    gps_timestamp_pos = rl.Vector2(rect.x + rect.width / 2 - gps_timestamp_text_size.x / 2, 456 - gps_timestamp_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, self.gps_timestamp_line, gps_timestamp_pos, FONT_SIZES.gps_debug, 0, COLORS.WHITE_TRANSLUCENT)
+    self._draw_text_centered(rect, self.speed_source, 350, FONT_SIZES.speed_source, COLORS.WHITE_TRANSLUCENT)
+    self._draw_text_centered(rect, self.gps_external_line, 400, FONT_SIZES.gps_debug, COLORS.WHITE)
+    self._draw_text_centered(rect, self.gps_base_line, 452, FONT_SIZES.gps_debug, COLORS.WHITE)
+    self._draw_text_centered(rect, self.gps_error_line, 500, FONT_SIZES.gps_debug_small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_text_centered(rect, self.gps_timestamp_line, 540, FONT_SIZES.gps_debug_small, COLORS.WHITE_TRANSLUCENT)
