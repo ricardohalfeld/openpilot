@@ -1,5 +1,4 @@
 import pyray as rl
-import time
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
@@ -13,18 +12,21 @@ from openpilot.system.ui.widgets import Widget
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
-GPS_VALUE_NA = "--"
+STALE_SECONDS_FULL_RED = 5.0
+STOPPED_SPEED_THRESHOLD = 0.01
 
 
 @dataclass(frozen=True)
 class UIConfig:
-  header_height: int = 560
+  header_height: int = 430
   border_size: int = 30
   button_size: int = 192
   set_speed_width_metric: int = 200
   set_speed_width_imperial: int = 172
   set_speed_height: int = 204
   wheel_icon_size: int = 144
+  freshness_marker_radius: int = 18
+  freshness_marker_spacing: int = 150
 
 
 @dataclass(frozen=True)
@@ -32,8 +34,7 @@ class FontSizes:
   current_speed: int = 176
   speed_unit: int = 66
   speed_source: int = 42
-  gps_debug: int = 44
-  gps_debug_small: int = 36
+  gps_marker: int = 34
   max_speed: int = 40
   set_speed: int = 90
 
@@ -52,8 +53,10 @@ class Colors:
   BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
   BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
-  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 165)
+  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 150)
   HEADER_GRADIENT_END = rl.BLANK
+  FRESH_GREEN = rl.Color(40, 220, 80, 255)
+  STALE_RED = rl.Color(255, 60, 50, 255)
 
 
 UI_CONFIG = UIConfig()
@@ -70,10 +73,6 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.speed_source: str = "ODOMETRY"
-    self.gps_external_line: str = "EXT never A0 V0 F0 SAT--"
-    self.gps_base_line: str = "GPS never A0 V0 F0 SAT--"
-    self.gps_error_line: str = "EXT H-- S--   GPS H-- S--"
-    self.gps_timestamp_line: str = "TS E-- G--   SIG n/a"
     self.v_ego_cluster_seen: bool = False
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -83,66 +82,29 @@ class HudRenderer(Widget):
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
 
   @staticmethod
-  def _fmt_gps_value(value: float, unit: str = "", precision: int = 1) -> str:
-    if value <= 0.0:
-      return GPS_VALUE_NA
-    return f"{value:.{precision}f}{unit}"
-
-  @staticmethod
-  def _fmt_age(seconds: float) -> str:
-    if seconds < 60.0:
-      return f"{seconds:.1f}s"
-    if seconds < 3600.0:
-      return f"{seconds / 60.0:.1f}m"
-    return f"{seconds / 3600.0:.1f}h"
-
-  @staticmethod
-  def _fmt_timestamp_age(gps_location) -> str:
-    if gps_location.unixTimestampMillis <= 0:
-      return GPS_VALUE_NA
-    return HudRenderer._fmt_age(max(0.0, time.time() - gps_location.unixTimestampMillis / 1000.0))
-
-  @staticmethod
-  def _service_age(sm, service: str) -> str:
+  def _service_age_seconds(sm, service: str) -> float | None:
     recv_frame = sm.recv_frame[service]
     if recv_frame <= 0 or recv_frame < ui_state.started_frame:
-      return "never"
-    return HudRenderer._fmt_age(max(0, sm.frame - recv_frame) / max(gui_app.target_fps, 1))
+      return None
+    return max(0, sm.frame - recv_frame) / max(gui_app.target_fps, 1)
+
+  @staticmethod
+  def _freshness_color(age_seconds: float | None) -> rl.Color:
+    if age_seconds is None:
+      return COLORS.STALE_RED
+
+    stale_fraction = min(max(age_seconds / STALE_SECONDS_FULL_RED, 0.0), 1.0)
+    green_fraction = 1.0 - stale_fraction
+    return rl.Color(
+      round(COLORS.FRESH_GREEN.r * green_fraction + COLORS.STALE_RED.r * stale_fraction),
+      round(COLORS.FRESH_GREEN.g * green_fraction + COLORS.STALE_RED.g * stale_fraction),
+      round(COLORS.FRESH_GREEN.b * green_fraction + COLORS.STALE_RED.b * stale_fraction),
+      255,
+    )
 
   def _gps_service_has_fix(self, service: str) -> bool:
     sm = ui_state.sm
     return sm.alive[service] and sm.valid[service] and sm[service].hasFix
-
-  def _gps_service_status_line(self, label: str, service: str) -> str:
-    sm = ui_state.sm
-    gps_location = sm[service]
-    gps_alive = sm.alive[service]
-    gps_valid = sm.valid[service]
-    gps_fix = self._gps_service_has_fix(service)
-    sat_count = gps_location.satelliteCount if gps_alive else GPS_VALUE_NA
-
-    return (
-      f"{label} {self._service_age(sm, service)} "
-      f"A{int(gps_alive)} V{int(gps_valid)} F{int(gps_fix)} SAT{sat_count}"
-    )
-
-  def _update_gps_debug(self) -> None:
-    sm = ui_state.sm
-    gps_external = sm["gpsLocationExternal"]
-    gps_base = sm["gpsLocation"]
-
-    self.gps_external_line = self._gps_service_status_line("EXT", "gpsLocationExternal")
-    self.gps_base_line = self._gps_service_status_line("GPS", "gpsLocation")
-    self.gps_error_line = (
-      f"EXT H{self._fmt_gps_value(gps_external.horizontalAccuracy)} "
-      f"S{self._fmt_gps_value(gps_external.speedAccuracy)}   "
-      f"GPS H{self._fmt_gps_value(gps_base.horizontalAccuracy)} "
-      f"S{self._fmt_gps_value(gps_base.speedAccuracy)}"
-    )
-    self.gps_timestamp_line = (
-      f"TS E{self._fmt_timestamp_age(gps_external)} "
-      f"G{self._fmt_timestamp_age(gps_base)}   SIG n/a"
-    )
 
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
@@ -152,10 +114,6 @@ class HudRenderer(Widget):
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
       self.speed_source = "ODOMETRY"
-      self.gps_external_line = "EXT never A0 V0 F0 SAT--"
-      self.gps_base_line = "GPS never A0 V0 F0 SAT--"
-      self.gps_error_line = "EXT H-- S--   GPS H-- S--"
-      self.gps_timestamp_line = "TS E-- G--   SIG n/a"
       return
 
     controls_state = sm['controlsState']
@@ -171,17 +129,21 @@ class HudRenderer(Widget):
     if self.is_cruise_set and not ui_state.is_metric:
       self.set_speed *= KM_TO_MILE
 
-    self._update_gps_debug()
-    if self._gps_service_has_fix("gpsLocationExternal"):
+    v_ego_cluster = car_state.vEgoCluster
+    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
+    v_ego_odometry = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+
+    if abs(v_ego_odometry) <= STOPPED_SPEED_THRESHOLD:
+      v_ego = 0.0
+      self.speed_source = "ODOMETRY"
+    elif self._gps_service_has_fix("gpsLocationExternal"):
       v_ego = sm["gpsLocationExternal"].speed
       self.speed_source = "GPS EXT"
     elif self._gps_service_has_fix("gpsLocation"):
       v_ego = sm["gpsLocation"].speed
       self.speed_source = "GPS"
     else:
-      v_ego_cluster = car_state.vEgoCluster
-      self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
-      v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+      v_ego = v_ego_odometry
       self.speed_source = "ODOMETRY"
 
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
@@ -259,6 +221,26 @@ class HudRenderer(Widget):
     text_pos = rl.Vector2(rect.x + rect.width / 2 - text_size.x / 2, y - text_size.y / 2)
     rl.draw_text_ex(self._font_medium, text, text_pos, font_size, 0, color)
 
+  def _draw_freshness_marker(self, center_x: float, center_y: float, label: str, service: str) -> None:
+    sm = ui_state.sm
+    color = self._freshness_color(self._service_age_seconds(sm, service))
+
+    rl.draw_circle(int(center_x), int(center_y), UI_CONFIG.freshness_marker_radius, color)
+    rl.draw_circle_lines(int(center_x), int(center_y), UI_CONFIG.freshness_marker_radius, COLORS.WHITE_TRANSLUCENT)
+
+    label_size = measure_text_cached(self._font_medium, label, FONT_SIZES.gps_marker)
+    label_pos = rl.Vector2(center_x - label_size.x / 2, center_y + UI_CONFIG.freshness_marker_radius + 10)
+    rl.draw_text_ex(self._font_medium, label, label_pos, FONT_SIZES.gps_marker, 0, COLORS.WHITE)
+
+  def _draw_freshness_markers(self, rect: rl.Rectangle) -> None:
+    center_x = rect.x + rect.width / 2
+    center_y = 385
+    spacing = UI_CONFIG.freshness_marker_spacing
+
+    self._draw_freshness_marker(center_x - spacing, center_y, "GPS", "gpsLocation")
+    self._draw_freshness_marker(center_x, center_y, "EXT", "gpsLocationExternal")
+    self._draw_freshness_marker(center_x + spacing, center_y, "ODO", "carState")
+
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
     speed_text = str(round(self.speed))
@@ -271,8 +253,5 @@ class HudRenderer(Widget):
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
 
-    self._draw_text_centered(rect, self.speed_source, 350, FONT_SIZES.speed_source, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_centered(rect, self.gps_external_line, 400, FONT_SIZES.gps_debug, COLORS.WHITE)
-    self._draw_text_centered(rect, self.gps_base_line, 452, FONT_SIZES.gps_debug, COLORS.WHITE)
-    self._draw_text_centered(rect, self.gps_error_line, 500, FONT_SIZES.gps_debug_small, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_centered(rect, self.gps_timestamp_line, 540, FONT_SIZES.gps_debug_small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_text_centered(rect, self.speed_source, 348, FONT_SIZES.speed_source, COLORS.WHITE_TRANSLUCENT)
+    self._draw_freshness_markers(rect)
