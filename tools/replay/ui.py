@@ -33,6 +33,84 @@ os.environ['BASEDIR'] = BASEDIR
 
 ANGLE_SCALE = 5.0
 
+BAR_BG = rl.Color(22, 22, 22, 220)
+BAR_BORDER = rl.Color(180, 180, 180, 255)
+BAR_ZERO = rl.Color(255, 255, 255, 255)
+BAR_TOTAL = rl.Color(255, 255, 255, 255)
+BAR_P = rl.Color(80, 180, 255, 255)
+BAR_I = rl.Color(255, 190, 70, 255)
+BAR_D = rl.Color(190, 120, 255, 255)
+BAR_F = rl.Color(90, 230, 120, 255)
+BAR_TORQUE = rl.Color(255, 90, 90, 255)
+BAR_MUTED = rl.Color(180, 180, 180, 255)
+
+
+def _draw_label(font, text, x, y, size=18, color=rl.WHITE):
+  rl.draw_text_ex(font, text, rl.Vector2(float(x), float(y)), size, 0, color)
+
+
+def _draw_signed_stack_bar(font, x, y, width, height, title, values, total_value, unit):
+  value_sum = sum(v for _, v, _ in values)
+  max_abs = max(0.25, abs(total_value), abs(value_sum), sum(max(v, 0.0) for _, v, _ in values), abs(sum(min(v, 0.0) for _, v, _ in values)))
+  center_x = x + width // 2
+  half_width = width // 2 - 2
+
+  _draw_label(font, f"{title}  +/-{max_abs:.2f} {unit}", x, y - 23, 18, rl.WHITE)
+  rl.draw_rectangle(x, y, width, height, BAR_BG)
+  rl.draw_rectangle_lines(x, y, width, height, BAR_BORDER)
+  rl.draw_line(center_x, y - 4, center_x, y + height + 4, BAR_ZERO)
+
+  pos_x = center_x
+  neg_x = center_x
+  for label, value, color in values:
+    segment_width = int(round(abs(value) / max_abs * half_width))
+    if segment_width <= 0:
+      continue
+    if value >= 0.0:
+      rl.draw_rectangle(pos_x, y + 2, segment_width, height - 4, color)
+      pos_x += segment_width
+    else:
+      neg_x -= segment_width
+      rl.draw_rectangle(neg_x, y + 2, segment_width, height - 4, color)
+
+  total_x = int(round(center_x + np.clip(total_value / max_abs, -1.0, 1.0) * half_width))
+  rl.draw_line(total_x, y - 6, total_x, y + height + 6, BAR_TOTAL)
+  rl.draw_circle(total_x, y + height // 2, 4.0, BAR_TOTAL)
+
+  legend_x = x
+  legend_y = y + height + 9
+  for label, value, color in values:
+    rl.draw_rectangle(legend_x, legend_y + 3, 10, 10, color)
+    _draw_label(font, f"{label} {value:+.2f}", legend_x + 14, legend_y, 16, rl.WHITE)
+    legend_x += 84
+  _draw_label(font, f"SUM {value_sum:+.2f} / TOTAL {total_value:+.2f}", x, legend_y + 21, 16, BAR_MUTED)
+
+
+def _draw_signed_total_bar(font, x, y, width, height, title, value, unit, limit=1.0):
+  center_x = x + width // 2
+  half_width = width // 2 - 2
+  value = float(np.clip(value, -limit, limit))
+  end_x = int(round(center_x + value / limit * half_width))
+  bar_x = min(center_x, end_x)
+  bar_width = abs(end_x - center_x)
+
+  _draw_label(font, f"{title}  +/-{limit:.1f} {unit}", x, y - 23, 18, rl.WHITE)
+  rl.draw_rectangle(x, y, width, height, BAR_BG)
+  rl.draw_rectangle_lines(x, y, width, height, BAR_BORDER)
+  rl.draw_line(center_x, y - 4, center_x, y + height + 4, BAR_ZERO)
+  if bar_width > 0:
+    rl.draw_rectangle(bar_x, y + 2, bar_width, height - 4, BAR_TORQUE)
+  rl.draw_line(end_x, y - 6, end_x, y + height + 6, BAR_TOTAL)
+  rl.draw_circle(end_x, y + height // 2, 4.0, BAR_TOTAL)
+  _draw_label(font, f"CMD {value:+.3f} {unit}", x, y + height + 9, 16, rl.WHITE)
+
+
+def _draw_info_lines(font, lines, x, y, spacing, max_lines=None):
+  for i, line in enumerate(lines[:max_lines]):
+    if line is not None:
+      color = rl.Color(line[1][0], line[1][1], line[1][2], 255)
+      rl.draw_text_ex(font, line[0], rl.Vector2(x, y + i * spacing), 20, 0, color)
+
 
 def ui_thread(addr):
   cv2.setNumThreads(1)
@@ -248,27 +326,38 @@ def ui_thread(addr):
     rl.update_texture(top_down_texture, rl.ffi.cast("void *", np.ascontiguousarray(lid_rgba).ctypes.data))
     rl.draw_texture(top_down_texture, 640, 0, rl.WHITE)
 
-    SPACING = 25
+    SPACING = 22 if hor_mode else 25
     lines = [
       ("ENABLED", GREEN if sm['selfdriveState'].enabled else BLACK),
       ("SPEED: " + str(round(sm['carState'].vEgo, 1)) + " m/s", YELLOW),
       ("LONG CONTROL STATE: " + str(sm['controlsState'].longControlState), YELLOW),
       ("LONG MPC SOURCE: " + str(sm['longitudinalPlan'].longitudinalPlanSource), YELLOW),
-      None,
-      ("ANGLE OFFSET (AVG): " + str(round(sm['liveParameters'].angleOffsetAverageDeg, 2)) + " deg", YELLOW),
-      ("ANGLE OFFSET (INSTANT): " + str(round(sm['liveParameters'].angleOffsetDeg, 2)) + " deg", YELLOW),
+      ("ANGLE OFFSET AVG/INST: " + str(round(sm['liveParameters'].angleOffsetAverageDeg, 2)) + " / " + str(round(sm['liveParameters'].angleOffsetDeg, 2)) + " deg", YELLOW),
       ("STIFFNESS: " + str(round(sm['liveParameters'].stiffnessFactor * 100.0, 2)) + " %", YELLOW),
       ("STEER RATIO: " + str(round(sm['liveParameters'].steerRatio, 2)), YELLOW),
-      None,
-      ("TORQUE PID KP: " + str(round(current_torque_kp, 3)), YELLOW),
-      ("TORQUE PID KI: " + str(round(LAT_TORQUE_KI, 3)), YELLOW),
+      ("TORQUE PID KP/KI: " + str(round(current_torque_kp, 3)) + " / " + str(round(LAT_TORQUE_KI, 3)), YELLOW),
     ]
 
     if torque_state is not None:
       lines += [
         ("TORQUE PID ERROR: " + str(round(torque_state.error, 3)), YELLOW),
-        ("TORQUE PID P/I/F: " + str(round(torque_state.p, 3)) + " / " + str(round(torque_state.i, 3)) + " / " + str(round(torque_state.f, 3)), YELLOW),
+        ("TORQUE PID P/I/D/F: " + str(round(torque_state.p, 3)) + " / " + str(round(torque_state.i, 3)) + " / " + str(round(torque_state.d, 3)) + " / " + str(round(torque_state.f, 3)), YELLOW),
       ]
+
+    _draw_info_lines(font, lines, write_x, write_y, SPACING)
+
+    if torque_state is not None:
+      bar_x = write_x
+      bar_width = 600 if hor_mode else 370
+      bar_y = write_y + len(lines) * SPACING + 38
+      pid_values = [
+        ("P", float(torque_state.p), BAR_P),
+        ("I", float(torque_state.i), BAR_I),
+        ("D", float(torque_state.d), BAR_D),
+        ("FF", float(torque_state.f), BAR_F),
+      ]
+      _draw_signed_stack_bar(font, bar_x, bar_y, bar_width, 20, "PID LAT ACCEL COMPONENTS", pid_values, float(torque_state.p + torque_state.i + torque_state.d + torque_state.f), "m/s^2")
+      _draw_signed_total_bar(font, bar_x, bar_y + 82, bar_width, 18, "STEERING TORQUE COMMAND", float(sm['carControl'].actuators.torque), "norm")
 
     for i, line in enumerate(lines):
       if line is not None:
