@@ -38,6 +38,9 @@ class LatControlTorque(LatControl):
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
+    self.kp_scale = 1.0
+    self.ki_scale = 1.0
+    self.ff_scale = 1.0
     self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
@@ -46,10 +49,16 @@ class LatControlTorque(LatControl):
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
-  def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
+  def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction,
+                                kpScale=1.0, kiScale=1.0, ffScale=1.0):
     self.torque_params.latAccelFactor = latAccelFactor
     self.torque_params.latAccelOffset = latAccelOffset
     self.torque_params.friction = friction
+    self.kp_scale = kpScale
+    self.ki_scale = kiScale
+    self.ff_scale = ffScale
+    self.pid._k_p = [INTERP_SPEEDS, [kp * self.kp_scale for kp in KP_INTERP]]
+    self.pid._k_i = [[0], [KI * self.ki_scale]]
     self.update_limits()
 
   def update_limits(self):
@@ -81,6 +90,7 @@ class LatControlTorque(LatControl):
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
     ff -= self.torque_params.latAccelOffset
     ff += get_friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
+    ff *= self.ff_scale
 
     if not active:
       output_torque = 0.0
