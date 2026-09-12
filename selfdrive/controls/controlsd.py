@@ -4,9 +4,10 @@ import math
 import time
 from numbers import Number
 
+import numpy as np
 from cereal import car, log
 import cereal.messaging as messaging
-from openpilot.common.constants import CV
+from openpilot.common.constants import CV, ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog
@@ -31,6 +32,7 @@ TORQUE_TUNE_OVERRIDE_PARAM = "TorqueTuneOverride"
 TORQUE_TUNE_OVERRIDE_POLL_INTERVAL = 0.2
 TORQUE_LAT_ACCEL_FACTOR_RANGE = (1.5, 3.5)
 TORQUE_FRICTION_RANGE = (0.0, 0.25)
+TORQUE_MAX_LAT_ACCEL_RANGE = (1.5, 3.5)
 TORQUE_GAIN_SCALE_RANGE = (0.0, 2.0)
 
 
@@ -67,7 +69,7 @@ class Controls:
 
     self._torque_override_update_time = 0.0
     self._torque_override_raw: bytes | str | None = None
-    self._torque_override_values: tuple[float, float, float, float, float] | None = None
+    self._torque_override_values: tuple[float, float, float, float, float, float] | None = None
 
   def update(self):
     self.sm.update(15)
@@ -90,6 +92,7 @@ class Controls:
     self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
 
     # Update Torque Params
+    torque_override_max_lat_accel = None
     if self.CP.lateralTuning.which() == 'torque':
       torque_params = self.sm['liveTorqueParameters']
       if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
@@ -97,7 +100,8 @@ class Controls:
                                            torque_params.frictionCoefficientFiltered)
       self._update_torque_tune_override()
       if self._torque_override_values is not None:
-        lat_accel_factor, friction, kp_scale, ki_scale, ff_scale = self._torque_override_values
+        lat_accel_factor, friction, max_lat_accel, kp_scale, ki_scale, ff_scale = self._torque_override_values
+        torque_override_max_lat_accel = max_lat_accel
         self.LaC.update_live_torque_params(lat_accel_factor, 0.0, friction, kp_scale, ki_scale, ff_scale)
 
     long_plan = self.sm['longitudinalPlan']
@@ -133,6 +137,15 @@ class Controls:
     # Reset desired curvature to current to avoid violating the limits on engage
     new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+    if torque_override_max_lat_accel is not None:
+      v_ego = max(CS.vEgo, 1.0)
+      roll_compensation = lp.roll * ACCELERATION_DUE_TO_GRAVITY
+      max_lat_accel = torque_override_max_lat_accel + roll_compensation
+      min_lat_accel = -torque_override_max_lat_accel + roll_compensation
+      clipped_curvature = float(np.clip(self.desired_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2))
+      curvature_limited = curvature_limited or clipped_curvature != self.desired_curvature
+      self.desired_curvature = clipped_curvature
+
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
@@ -175,6 +188,7 @@ class Controls:
 
       lat_accel_factor = float(override["latAccelFactor"])
       friction = float(override["friction"])
+      max_lat_accel = float(override.get("maxLatAccel", self.CP.maxLateralAccel))
       kp_scale = float(override.get("kpScale", 1.0))
       ki_scale = float(override.get("kiScale", 1.0))
       ff_scale = float(override.get("ffScale", 1.0))
@@ -182,13 +196,15 @@ class Controls:
         raise ValueError("latAccelFactor out of range")
       if not TORQUE_FRICTION_RANGE[0] <= friction <= TORQUE_FRICTION_RANGE[1]:
         raise ValueError("friction out of range")
+      if not TORQUE_MAX_LAT_ACCEL_RANGE[0] <= max_lat_accel <= TORQUE_MAX_LAT_ACCEL_RANGE[1]:
+        raise ValueError("maxLatAccel out of range")
       for name, scale in (("kpScale", kp_scale), ("kiScale", ki_scale), ("ffScale", ff_scale)):
         if not TORQUE_GAIN_SCALE_RANGE[0] <= scale <= TORQUE_GAIN_SCALE_RANGE[1]:
           raise ValueError(f"{name} out of range")
 
-      self._torque_override_values = (lat_accel_factor, friction, kp_scale, ki_scale, ff_scale)
+      self._torque_override_values = (lat_accel_factor, friction, max_lat_accel, kp_scale, ki_scale, ff_scale)
       cloudlog.warning(f"Using torque tune override: latAccelFactor={lat_accel_factor:.3f}, friction={friction:.3f}, "
-                       f"kpScale={kp_scale:.3f}, kiScale={ki_scale:.3f}, ffScale={ff_scale:.3f}")
+                       f"maxLatAccel={max_lat_accel:.3f}, kpScale={kp_scale:.3f}, kiScale={ki_scale:.3f}, ffScale={ff_scale:.3f}")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
       cloudlog.exception(f"Invalid {TORQUE_TUNE_OVERRIDE_PARAM}")
 
