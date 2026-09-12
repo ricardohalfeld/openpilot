@@ -31,6 +31,7 @@ TORQUE_TUNE_OVERRIDE_PARAM = "TorqueTuneOverride"
 TORQUE_TUNE_OVERRIDE_POLL_INTERVAL = 0.2
 TORQUE_LAT_ACCEL_FACTOR_RANGE = (1.5, 3.5)
 TORQUE_FRICTION_RANGE = (0.0, 0.25)
+TORQUE_GAIN_SCALE_RANGE = (0.0, 2.0)
 
 
 class Controls:
@@ -65,8 +66,8 @@ class Controls:
       self.LaC = LatControlTorque(self.CP, self.CI, DT_CTRL)
 
     self._torque_override_update_time = 0.0
-    self._torque_override_raw: dict | str | None = None
-    self._torque_override_values: tuple[float, float] | None = None
+    self._torque_override_raw: bytes | str | None = None
+    self._torque_override_values: tuple[float, float, float, float, float] | None = None
 
   def update(self):
     self.sm.update(15)
@@ -96,8 +97,8 @@ class Controls:
                                            torque_params.frictionCoefficientFiltered)
       self._update_torque_tune_override()
       if self._torque_override_values is not None:
-        lat_accel_factor, friction = self._torque_override_values
-        self.LaC.update_live_torque_params(lat_accel_factor, 0.0, friction)
+        lat_accel_factor, friction, kp_scale, ki_scale, ff_scale = self._torque_override_values
+        self.LaC.update_live_torque_params(lat_accel_factor, 0.0, friction, kp_scale, ki_scale, ff_scale)
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -168,20 +169,27 @@ class Controls:
       return
 
     try:
-      override = json.loads(raw_override) if isinstance(raw_override, str) else raw_override
+      override = json.loads(raw_override.decode("utf-8") if isinstance(raw_override, bytes) else raw_override)
       if not override.get("enabled", False):
         return
 
       lat_accel_factor = float(override["latAccelFactor"])
       friction = float(override["friction"])
+      kp_scale = float(override.get("kpScale", 1.0))
+      ki_scale = float(override.get("kiScale", 1.0))
+      ff_scale = float(override.get("ffScale", 1.0))
       if not TORQUE_LAT_ACCEL_FACTOR_RANGE[0] <= lat_accel_factor <= TORQUE_LAT_ACCEL_FACTOR_RANGE[1]:
         raise ValueError("latAccelFactor out of range")
       if not TORQUE_FRICTION_RANGE[0] <= friction <= TORQUE_FRICTION_RANGE[1]:
         raise ValueError("friction out of range")
+      for name, scale in (("kpScale", kp_scale), ("kiScale", ki_scale), ("ffScale", ff_scale)):
+        if not TORQUE_GAIN_SCALE_RANGE[0] <= scale <= TORQUE_GAIN_SCALE_RANGE[1]:
+          raise ValueError(f"{name} out of range")
 
-      self._torque_override_values = (lat_accel_factor, friction)
-      cloudlog.warning(f"Using torque tune override: latAccelFactor={lat_accel_factor:.3f}, friction={friction:.3f}")
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+      self._torque_override_values = (lat_accel_factor, friction, kp_scale, ki_scale, ff_scale)
+      cloudlog.warning(f"Using torque tune override: latAccelFactor={lat_accel_factor:.3f}, friction={friction:.3f}, "
+                       f"kpScale={kp_scale:.3f}, kiScale={ki_scale:.3f}, ffScale={ff_scale:.3f}")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
       cloudlog.exception(f"Invalid {TORQUE_TUNE_OVERRIDE_PARAM}")
 
   def publish(self, CC, lac_log):
@@ -261,7 +269,7 @@ class Controls:
       self.update()
       CC, lac_log = self.state_control()
       self.publish(CC, lac_log)
-      rk.monitor_time()
+      rk.keep_time()
 
 
 def main():
