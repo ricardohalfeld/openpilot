@@ -2,23 +2,17 @@ import json
 import pyray as rl
 from functools import partial
 from dataclasses import dataclass
-from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   INTERP_SPEEDS as LAT_TORQUE_INTERP_SPEEDS,
   KI as LAT_TORQUE_KI,
   KP_INTERP as LAT_TORQUE_KP_INTERP,
 )
-from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
-from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
+from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
-from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
 from openpilot.system.ui.widgets import Widget
 
-# Constants
-SET_SPEED_NA = 255
-KM_TO_MILE = 0.621371
 TORQUE_TUNE_OVERRIDE_PARAM = "TorqueTuneOverride"
 TUNE_STEP = {
   "latAccelFactor": 0.05,
@@ -36,53 +30,29 @@ TUNE_LIMITS = {
   "kiScale": (0.0, 2.0),
   "ffScale": (0.0, 2.0),
 }
-CRUISE_DISABLED_CHAR = '–'
-
-
-@dataclass(frozen=True)
-class UIConfig:
-  header_height: int = 300
-  border_size: int = 30
-  button_size: int = 192
-  set_speed_width_metric: int = 200
-  set_speed_width_imperial: int = 172
-  set_speed_height: int = 204
-  wheel_icon_size: int = 144
-  tune_panel_width: int = 960
-  tune_panel_height: int = 720
-  tune_button_size: int = 72
 
 
 @dataclass(frozen=True)
 class FontSizes:
-  current_speed: int = 176
-  speed_unit: int = 66
-  max_speed: int = 40
-  set_speed: int = 90
-  tune_title: int = 44
-  tune_label: int = 34
-  tune_value: int = 40
-  tune_small: int = 27
-  tune_tiny: int = 22
+  title: int = 72
+  subtitle: int = 34
+  section: int = 30
+  row_label: int = 42
+  row_value: int = 54
+  small: int = 28
+  tiny: int = 24
 
 
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
-  DISENGAGED = rl.Color(145, 155, 149, 255)
-  OVERRIDE = rl.Color(145, 155, 149, 255)  # Added
-  ENGAGED = rl.Color(128, 216, 166, 255)
-  DISENGAGED_BG = rl.Color(0, 0, 0, 153)
-  OVERRIDE_BG = rl.Color(145, 155, 149, 204)
-  ENGAGED_BG = rl.Color(128, 216, 166, 204)
-  GREY = rl.Color(166, 166, 166, 255)
-  DARK_GREY = rl.Color(114, 114, 114, 255)
-  BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
-  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
-  BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
-  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 114)
-  HEADER_GRADIENT_END = rl.BLANK
-  BAR_BG = rl.Color(20, 20, 20, 205)
+  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 210)
+  MUTED = rl.Color(185, 185, 185, 255)
+  PANEL_BG = rl.Color(0, 0, 0, 225)
+  CARD_BG = rl.Color(25, 25, 25, 230)
+  BUTTON_BG = rl.Color(255, 255, 255, 40)
+  BORDER = rl.Color(255, 255, 255, 75)
+  BAR_BG = rl.Color(16, 16, 16, 255)
   BAR_ZERO = rl.Color(255, 255, 255, 220)
   BAR_MARKER = rl.Color(255, 255, 255, 255)
   BAR_P = rl.Color(80, 180, 255, 255)
@@ -92,7 +62,6 @@ class Colors:
   BAR_CMD = rl.Color(255, 95, 95, 255)
 
 
-UI_CONFIG = UIConfig()
 FONT_SIZES = FontSizes()
 COLORS = Colors()
 
@@ -113,137 +82,49 @@ def _loads_param_json(raw):
   return None
 
 
+def _interp(x: float, xp: list[float], fp: list[float]) -> float:
+  if x <= xp[0]:
+    return fp[0]
+  if x >= xp[-1]:
+    return fp[-1]
+  for i in range(1, len(xp)):
+    if x < xp[i]:
+      t = (x - xp[i - 1]) / (xp[i] - xp[i - 1])
+      return fp[i - 1] + t * (fp[i] - fp[i - 1])
+  return fp[-1]
+
+
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
-    """Initialize the HUD renderer."""
-    self.is_cruise_set: bool = False
-    self.is_cruise_available: bool = True
-    self.set_speed: float = SET_SPEED_NA
-    self.speed: float = 0.0
-    self.v_ego_cluster_seen: bool = False
-
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
 
-    self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
     self._tune_buttons: dict[tuple[str, int], Button] = {}
     for key in TUNE_STEP:
       for direction, text in ((-1, "-"), (1, "+")):
         self._tune_buttons[(key, direction)] = self._child(Button(text, partial(self._adjust_tune, key, direction),
-                                                                  font_size=48, button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
-                                                                  border_radius=8))
-    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=42,
-                                                 button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=8))
+                                                                  font_size=54,
+                                                                  button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
+                                                                  border_radius=10))
+    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=44,
+                                                 button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
 
   def _update_state(self) -> None:
-    """Update HUD state based on car state and controls state."""
-    sm = ui_state.sm
-    if sm.recv_frame["carState"] < ui_state.started_frame:
-      self.is_cruise_set = False
-      self.set_speed = SET_SPEED_NA
-      self.speed = 0.0
-      return
-
-    controls_state = sm['controlsState']
-    car_state = sm['carState']
-
-    v_cruise_cluster = car_state.vCruiseCluster
-    self.set_speed = (
-      controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster
-    )
-    self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
-    self.is_cruise_available = self.set_speed != -1
-
-    if self.is_cruise_set and not ui_state.is_metric:
-      self.set_speed *= KM_TO_MILE
-
-    v_ego_cluster = car_state.vEgoCluster
-    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
-    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
-    speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    self.speed = max(0.0, v_ego * speed_conversion)
+    pass
 
   def _render(self, rect: rl.Rectangle) -> None:
-    """Render HUD elements to the screen."""
-    # Draw the header background
-    rl.draw_rectangle_gradient_v(
-      int(rect.x),
-      int(rect.y),
-      int(rect.width),
-      UI_CONFIG.header_height,
-      COLORS.HEADER_GRADIENT_START,
-      COLORS.HEADER_GRADIENT_END,
-    )
+    values = self._tune_values()
+    if values is None:
+      return
 
-    if self.is_cruise_available:
-      self._draw_set_speed(rect)
-
-    self._draw_current_speed(rect)
-    self._draw_torque_tune_panel(rect)
-
-    button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
-    button_y = rect.y + UI_CONFIG.border_size
-    self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+    rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), int(rect.height), COLORS.PANEL_BG)
+    self._draw_torque_tune_panel(rect, values)
 
   def user_interacting(self) -> bool:
-    return self._exp_button.is_pressed
-
-  def _draw_set_speed(self, rect: rl.Rectangle) -> None:
-    """Draw the MAX speed indicator box."""
-    set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
-    x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
-    y = rect.y + 45
-
-    set_speed_rect = rl.Rectangle(x, y, set_speed_width, UI_CONFIG.set_speed_height)
-    rl.draw_rectangle_rounded(set_speed_rect, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
-    rl.draw_rectangle_rounded_lines_ex(set_speed_rect, 0.35, 10, 6, COLORS.BORDER_TRANSLUCENT)
-
-    max_color = COLORS.GREY
-    set_speed_color = COLORS.DARK_GREY
-    if self.is_cruise_set:
-      set_speed_color = COLORS.WHITE
-      if ui_state.status == UIStatus.ENGAGED:
-        max_color = COLORS.ENGAGED
-      elif ui_state.status == UIStatus.DISENGAGED:
-        max_color = COLORS.DISENGAGED
-      elif ui_state.status == UIStatus.OVERRIDE:
-        max_color = COLORS.OVERRIDE
-
-    max_text = tr("MAX")
-    max_text_width = measure_text_cached(self._font_semi_bold, max_text, FONT_SIZES.max_speed).x
-    rl.draw_text_ex(
-      self._font_semi_bold,
-      max_text,
-      rl.Vector2(x + (set_speed_width - max_text_width) / 2, y + 27),
-      FONT_SIZES.max_speed,
-      0,
-      max_color,
-    )
-
-    set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(self.set_speed))
-    speed_text_width = measure_text_cached(self._font_bold, set_speed_text, FONT_SIZES.set_speed).x
-    rl.draw_text_ex(
-      self._font_bold,
-      set_speed_text,
-      rl.Vector2(x + (set_speed_width - speed_text_width) / 2, y + 77),
-      FONT_SIZES.set_speed,
-      0,
-      set_speed_color,
-    )
-
-  def _draw_current_speed(self, rect: rl.Rectangle) -> None:
-    """Draw the current vehicle speed and unit."""
-    speed_text = str(round(self.speed))
-    speed_text_size = measure_text_cached(self._font_bold, speed_text, FONT_SIZES.current_speed)
-    speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
-    rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
-
-    unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
-    unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
-    unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+    # The fullscreen tuner owns the onroad screen. Do not let touches fall through to the main layout.
+    return True
 
   def _default_tune_values(self) -> dict[str, float] | None:
     if ui_state.CP is None or ui_state.CP.lateralTuning.which() != "torque":
@@ -266,17 +147,20 @@ class HudRenderer(Widget):
 
     try:
       override = _loads_param_json(ui_state.params.get(TORQUE_TUNE_OVERRIDE_PARAM))
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
       override = None
 
     if isinstance(override, dict) and override.get("enabled", False):
       for key in values:
         if key in override:
-          values[key] = float(override[key])
+          try:
+            values[key] = float(override[key])
+          except (TypeError, ValueError):
+            pass
     return values
 
   def _write_tune_values(self, values: dict[str, float]) -> None:
-    ui_state.params.put_nonblocking(TORQUE_TUNE_OVERRIDE_PARAM, json.dumps({
+    payload = {
       "enabled": True,
       "latAccelFactor": round(values["latAccelFactor"], 3),
       "friction": round(values["friction"], 3),
@@ -284,7 +168,8 @@ class HudRenderer(Widget):
       "kpScale": round(values["kpScale"], 3),
       "kiScale": round(values["kiScale"], 3),
       "ffScale": round(values["ffScale"], 3),
-    }))
+    }
+    ui_state.params.put_nonblocking(TORQUE_TUNE_OVERRIDE_PARAM, json.dumps(payload))
 
   def _adjust_tune(self, key: str, direction: int) -> None:
     values = self._tune_values()
@@ -292,7 +177,7 @@ class HudRenderer(Widget):
       return
 
     lo, hi = TUNE_LIMITS[key]
-    values[key] = min(max(values[key] + direction * TUNE_STEP[key], lo), hi)
+    values[key] = _clamp(values[key] + direction * TUNE_STEP[key], lo, hi)
     self._write_tune_values(values)
 
   def _reset_tune(self) -> None:
@@ -302,17 +187,33 @@ class HudRenderer(Widget):
     text_size = measure_text_cached(self._font_medium, text, font_size)
     rl.draw_text_ex(self._font_medium, text, rl.Vector2(x - text_size.x, y), font_size, 0, color)
 
+  def _draw_tune_row(self, x: float, y: float, width: float, label: str, key: str, value: float, help_text: str) -> None:
+    row_h = 88
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, row_h), 0.12, 8, COLORS.CARD_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, row_h), 0.12, 8, 2, COLORS.BORDER)
+
+    rl.draw_text_ex(self._font_medium, label, rl.Vector2(x + 22, y + 17), FONT_SIZES.row_label, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, help_text, rl.Vector2(x + 22, y + 58), FONT_SIZES.tiny, 0, COLORS.MUTED)
+
+    value_text = f"{value:.2f}"
+    value_size = measure_text_cached(self._font_bold, value_text, FONT_SIZES.row_value)
+    value_x = x + width - 255 - value_size.x / 2
+    rl.draw_text_ex(self._font_bold, value_text, rl.Vector2(value_x, y + 14), FONT_SIZES.row_value, 0, COLORS.WHITE)
+
+    self._tune_buttons[(key, -1)].render(rl.Rectangle(x + width - 184, y + 8, 76, 72))
+    self._tune_buttons[(key, 1)].render(rl.Rectangle(x + width - 92, y + 8, 76, 72))
+
   def _draw_signed_component_bar(self, x: float, y: float, width: float, height: float,
                                  values: list[tuple[str, float, rl.Color]], total: float) -> None:
     center_x = int(x + width / 2)
-    half_width = int(width / 2 - 8)
+    half_width = int(width / 2 - 10)
     pos_sum = sum(max(value, 0.0) for _, value, _ in values)
     neg_sum = abs(sum(min(value, 0.0) for _, value, _ in values))
     scale = max(0.25, abs(total), pos_sum, neg_sum)
 
-    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.20, 8, COLORS.BAR_BG)
-    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.20, 8, 2, COLORS.BORDER_TRANSLUCENT)
-    rl.draw_line(center_x, int(y - 5), center_x, int(y + height + 5), COLORS.BAR_ZERO)
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.18, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_line(center_x, int(y - 7), center_x, int(y + height + 7), COLORS.BAR_ZERO)
 
     pos_x = center_x
     neg_x = center_x
@@ -321,44 +222,45 @@ class HudRenderer(Widget):
       if segment_width <= 0:
         continue
       if value >= 0.0:
-        rl.draw_rectangle(pos_x, int(y + 4), segment_width, int(height - 8), color)
+        rl.draw_rectangle(pos_x, int(y + 5), segment_width, int(height - 10), color)
         pos_x += segment_width
       else:
         neg_x -= segment_width
-        rl.draw_rectangle(neg_x, int(y + 4), segment_width, int(height - 8), color)
+        rl.draw_rectangle(neg_x, int(y + 5), segment_width, int(height - 10), color)
 
     total_x = int(center_x + _clamp(total / scale, -1.0, 1.0) * half_width)
-    rl.draw_line(total_x, int(y - 9), total_x, int(y + height + 9), COLORS.BAR_MARKER)
-    rl.draw_circle(total_x, int(y + height / 2), 6.0, COLORS.BAR_MARKER)
+    rl.draw_line(total_x, int(y - 11), total_x, int(y + height + 11), COLORS.BAR_MARKER)
+    rl.draw_circle(total_x, int(y + height / 2), 7.0, COLORS.BAR_MARKER)
 
   def _draw_signed_single_bar(self, x: float, y: float, width: float, height: float, value: float, limit: float = 1.0) -> None:
     center_x = int(x + width / 2)
-    half_width = int(width / 2 - 8)
+    half_width = int(width / 2 - 10)
     clipped = _clamp(value, -limit, limit)
     end_x = int(center_x + clipped / limit * half_width)
     bar_x = min(center_x, end_x)
     bar_w = abs(end_x - center_x)
 
-    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.20, 8, COLORS.BAR_BG)
-    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.20, 8, 2, COLORS.BORDER_TRANSLUCENT)
-    rl.draw_line(center_x, int(y - 5), center_x, int(y + height + 5), COLORS.BAR_ZERO)
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.18, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_line(center_x, int(y - 7), center_x, int(y + height + 7), COLORS.BAR_ZERO)
     if bar_w > 0:
-      rl.draw_rectangle(bar_x, int(y + 4), bar_w, int(height - 8), COLORS.BAR_CMD)
-    rl.draw_line(end_x, int(y - 9), end_x, int(y + height + 9), COLORS.BAR_MARKER)
-    rl.draw_circle(end_x, int(y + height / 2), 6.0, COLORS.BAR_MARKER)
+      rl.draw_rectangle(bar_x, int(y + 5), bar_w, int(height - 10), COLORS.BAR_CMD)
+    rl.draw_line(end_x, int(y - 11), end_x, int(y + height + 11), COLORS.BAR_MARKER)
+    rl.draw_circle(end_x, int(y + height / 2), 7.0, COLORS.BAR_MARKER)
 
   def _draw_bar_legend(self, x: float, y: float, values: list[tuple[str, float, rl.Color]]) -> None:
     cursor_x = x
     for label, value, color in values:
-      rl.draw_rectangle(int(cursor_x), int(y + 6), 18, 18, color)
-      rl.draw_text_ex(self._font_medium, f"{label} {value:+.2f}", rl.Vector2(cursor_x + 26, y),
-                      FONT_SIZES.tune_tiny, 0, COLORS.WHITE)
-      cursor_x += 150
+      rl.draw_rectangle(int(cursor_x), int(y + 7), 20, 20, color)
+      rl.draw_text_ex(self._font_medium, f"{label} {value:+.2f}", rl.Vector2(cursor_x + 30, y),
+                      FONT_SIZES.tiny, 0, COLORS.WHITE)
+      cursor_x += 170
 
-  def _draw_command_composition(self, panel_x: float, panel_y: float, panel_width: float, values: dict[str, float]) -> None:
+  def _draw_command_composition(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
     sm = ui_state.sm
     lateral_state = sm['controlsState'].lateralControlState
     if lateral_state.which() != "torqueState":
+      rl.draw_text_ex(self._font_medium, "Waiting for torqueState", rl.Vector2(x, y), FONT_SIZES.section, 0, COLORS.MUTED)
       return
 
     torque_state = lateral_state.torqueState
@@ -368,15 +270,13 @@ class HudRenderer(Widget):
     f_term = float(torque_state.f)
     lat_total = p_term + i_term + d_term + f_term
     torque_cmd = float(sm['carControl'].actuators.torque)
-    current_kp = self._current_torque_kp(values)
-    current_ki = LAT_TORQUE_KI * values["kiScale"]
+    current_kp = float(_interp(sm['carState'].vEgo, LAT_TORQUE_INTERP_SPEEDS, LAT_TORQUE_KP_INTERP) * values["kpScale"])
+    current_ki = float(LAT_TORQUE_KI * values["kiScale"])
 
-    x = panel_x + 36
-    w = panel_width - 72
-    y = panel_y + 438
-
-    rl.draw_text_ex(self._font_medium, f"KP/KI {current_kp:.3f} / {current_ki:.3f}    ERR {float(torque_state.error):+.2f}",
-                    rl.Vector2(x, y), FONT_SIZES.tune_small, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_medium, "PID + FF lateral-accel command", rl.Vector2(x, y),
+                    FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    self._draw_text_right(f"KP {current_kp:.3f}   KI {current_ki:.3f}   ERR {float(torque_state.error):+.2f}",
+                          x + width, y, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
 
     components = [
       ("P", p_term, COLORS.BAR_P),
@@ -384,73 +284,45 @@ class HudRenderer(Widget):
       ("D", d_term, COLORS.BAR_D),
       ("FF", f_term, COLORS.BAR_F),
     ]
-    rl.draw_text_ex(self._font_medium, "PID + FF LATERAL-ACCEL COMMAND", rl.Vector2(x, y + 43),
-                    FONT_SIZES.tune_tiny, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"SUM {lat_total:+.2f}", x + w, y + 43, FONT_SIZES.tune_tiny, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_component_bar(x, y + 76, w, 36, components, lat_total)
-    self._draw_bar_legend(x, y + 120, components)
+    self._draw_signed_component_bar(x, y + 54, width, 54, components, lat_total)
+    self._draw_bar_legend(x, y + 122, components)
+    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 122, FONT_SIZES.tiny, COLORS.MUTED)
 
-    rl.draw_text_ex(self._font_medium, "AFTER LAT CONVERSION: STEERING COMMAND", rl.Vector2(x, y + 158),
-                    FONT_SIZES.tune_tiny, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"CMD {torque_cmd:+.3f}", x + w, y + 158, FONT_SIZES.tune_tiny, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_single_bar(x, y + 190, w, 34, torque_cmd)
+    rl.draw_text_ex(self._font_medium, "After LAT conversion: steering command", rl.Vector2(x, y + 176),
+                    FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    self._draw_text_right(f"CMD {torque_cmd:+.3f}", x + width, y + 176, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_signed_single_bar(x, y + 230, width, 50, torque_cmd)
 
-  def _current_torque_kp(self, values: dict[str, float]) -> float:
-    return float(_interp(ui_state.sm['carState'].vEgo, LAT_TORQUE_INTERP_SPEEDS, LAT_TORQUE_KP_INTERP) * values["kpScale"])
+  def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
+    margin = 36
+    x = rect.x + margin
+    y = rect.y + margin
+    width = rect.width - 2 * margin
 
-  def _draw_tune_row(self, panel_x: float, row_y: float, col_x: float, label: str, key: str, value: float) -> None:
-    rl.draw_text_ex(self._font_medium, label, rl.Vector2(col_x, row_y + 18),
-                    FONT_SIZES.tune_label, 0, COLORS.WHITE)
-    value_text = f"{value:.2f}"
-    value_text_size = measure_text_cached(self._font_medium, value_text, FONT_SIZES.tune_value)
-    rl.draw_text_ex(self._font_medium, value_text, rl.Vector2(col_x + 150 - value_text_size.x / 2, row_y + 14),
-                    FONT_SIZES.tune_value, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_bold, "TORQUE TUNE", rl.Vector2(x, y), FONT_SIZES.title, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "Full-screen driving tuner: model/limit knobs on the left, PID/FF scale knobs on the right.",
+                    rl.Vector2(x, y + 78), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
+    self._tune_reset_button.render(rl.Rectangle(x + width - 140, y + 4, 128, 76))
 
-    self._tune_buttons[(key, -1)].render(rl.Rectangle(col_x + 260, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
-    self._tune_buttons[(key, 1)].render(rl.Rectangle(col_x + 356, row_y, UI_CONFIG.tune_button_size, UI_CONFIG.tune_button_size))
+    col_gap = 28
+    col_w = (width - col_gap) / 2
+    left_x = x
+    right_x = x + col_w + col_gap
+    rows_y = y + 142
 
-  def _draw_torque_tune_panel(self, rect: rl.Rectangle) -> None:
-    values = self._tune_values()
-    if values is None:
-      return
+    rl.draw_text_ex(self._font_medium, "MODEL / LIMIT", rl.Vector2(left_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_medium, "PID / FF SCALE", rl.Vector2(right_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
 
-    panel_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.tune_panel_width
-    panel_y = rect.y + UI_CONFIG.border_size + UI_CONFIG.button_size + 24
-    panel_rect = rl.Rectangle(panel_x, panel_y, UI_CONFIG.tune_panel_width, UI_CONFIG.tune_panel_height)
-    rl.draw_rectangle_rounded(panel_rect, 0.08, 10, COLORS.BLACK_TRANSLUCENT)
-    rl.draw_rectangle_rounded_lines_ex(panel_rect, 0.08, 10, 3, COLORS.BORDER_TRANSLUCENT)
-
-    rl.draw_text_ex(self._font_medium, "TORQUE TUNE", rl.Vector2(panel_x + 36, panel_y + 28),
-                    FONT_SIZES.tune_title, 0, COLORS.WHITE_TRANSLUCENT)
-    self._tune_reset_button.render(rl.Rectangle(panel_x + UI_CONFIG.tune_panel_width - 156, panel_y + 20, 118, 72))
-
-    left_x = panel_x + 40
-    right_x = panel_x + 492
-    rl.draw_text_ex(self._font_medium, "MODEL / LIMIT", rl.Vector2(left_x, panel_y + 94),
-                    FONT_SIZES.tune_tiny, 0, COLORS.WHITE_TRANSLUCENT)
-    rl.draw_text_ex(self._font_medium, "PID / FF SCALE", rl.Vector2(right_x, panel_y + 94),
-                    FONT_SIZES.tune_tiny, 0, COLORS.WHITE_TRANSLUCENT)
-
+    row_gap = 18
+    row_h = 88
     rows = (
-      (("LAT", "latAccelFactor"), ("KP", "kpScale")),
-      (("F", "friction"), ("KI", "kiScale")),
-      (("MAX", "maxLatAccel"), ("FF", "ffScale")),
+      (("LAT", "latAccelFactor", "accel-to-torque model"), ("KP", "kpScale", "P gain multiplier")),
+      (("F", "friction", "friction in FF"), ("KI", "kiScale", "I gain multiplier")),
+      (("MAX", "maxLatAccel", "request accel cap"), ("FF", "ffScale", "feedforward multiplier")),
     )
     for idx, (left, right) in enumerate(rows):
-      row_y = panel_y + 126 + idx * 86
-      self._draw_tune_row(panel_x, row_y, left_x, left[0], left[1], values[left[1]])
-      self._draw_tune_row(panel_x, row_y, right_x, right[0], right[1], values[right[1]])
+      row_y = rows_y + 46 + idx * (row_h + row_gap)
+      self._draw_tune_row(left_x, row_y, col_w, left[0], left[1], values[left[1]], left[2])
+      self._draw_tune_row(right_x, row_y, col_w, right[0], right[1], values[right[1]], right[2])
 
-    self._draw_command_composition(panel_x, panel_y, UI_CONFIG.tune_panel_width, values)
-
-
-def _interp(x: float, xp: list[float], fp: list[float]) -> float:
-  if x <= xp[0]:
-    return fp[0]
-  if x >= xp[-1]:
-    return fp[-1]
-  for i in range(1, len(xp)):
-    if x < xp[i]:
-      t = (x - xp[i - 1]) / (xp[i] - xp[i - 1])
-      return fp[i - 1] + t * (fp[i] - fp[i - 1])
-  return fp[-1]
+    self._draw_command_composition(x, rows_y + 386, width, values)
