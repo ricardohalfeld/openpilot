@@ -22,6 +22,7 @@ from openpilot.common.pid import PIDController
 
 KP = 0.8
 KI = 0.15
+KD = 0.0
 
 INTERP_SPEEDS = [1, 1.5, 2.0, 3.0, 5, 7.5, 10, 15, 30]
 KP_INTERP = [250, 120, 65, 30, 11.5, 5.5, 3.5, 2.0, KP]
@@ -40,25 +41,34 @@ class LatControlTorque(LatControl):
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
     self.kp_scale = 1.0
     self.ki_scale = 1.0
+    self.kd_gain = KD
     self.ff_scale = 1.0
-    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
+    self.prev_error = 0.0
+    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, KD, rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
-    self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len , maxlen=self.lat_accel_request_buffer_len)
+    self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len, maxlen=self.lat_accel_request_buffer_len)
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
+  def reset(self):
+    super().reset()
+    self.pid.reset()
+    self.prev_error = 0.0
+
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction,
-                                kpScale=1.0, kiScale=1.0, ffScale=1.0):
+                                kpScale=1.0, kiScale=1.0, kdGain=KD, ffScale=1.0):
     self.torque_params.latAccelFactor = latAccelFactor
     self.torque_params.latAccelOffset = latAccelOffset
     self.torque_params.friction = friction
     self.kp_scale = kpScale
     self.ki_scale = kiScale
+    self.kd_gain = kdGain
     self.ff_scale = ffScale
     self.pid._k_p = [INTERP_SPEEDS, [kp * self.kp_scale for kp in KP_INTERP]]
     self.pid._k_i = [[0], [KI * self.ki_scale]]
+    self.pid._k_d = [[0], [self.kd_gain]]
     self.update_limits()
 
   def update_limits(self):
@@ -82,8 +92,8 @@ class LatControlTorque(LatControl):
     setpoint = expected_lateral_accel
     error = setpoint - measurement
 
-    lookahead_idx = int(np.clip(-delay_frames + self.lookahead_frames, -self.lat_accel_request_buffer_len+1, -2))
-    raw_lateral_jerk = (self.lat_accel_request_buffer[lookahead_idx+1] - self.lat_accel_request_buffer[lookahead_idx-1]) / (2 * self.dt)
+    lookahead_idx = int(np.clip(-delay_frames + self.lookahead_frames, -self.lat_accel_request_buffer_len + 1, -2))
+    raw_lateral_jerk = (self.lat_accel_request_buffer[lookahead_idx + 1] - self.lat_accel_request_buffer[lookahead_idx - 1]) / (2 * self.dt)
     desired_lateral_jerk = self.jerk_filter.update(raw_lateral_jerk)
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
@@ -95,13 +105,18 @@ class LatControlTorque(LatControl):
     if not active:
       output_torque = 0.0
       pid_log.active = False
+      self.pid.reset()
+      self.prev_error = error
     else:
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
+      error_rate = float((error - self.prev_error) / self.dt)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
-      output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
+      output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate, speed=CS.vEgo,
+                                        feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+      self.prev_error = error
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
