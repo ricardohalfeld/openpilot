@@ -4,6 +4,7 @@ from functools import partial
 from dataclasses import dataclass
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   INTERP_SPEEDS as LAT_TORQUE_INTERP_SPEEDS,
+  KD as LAT_TORQUE_KD,
   KI as LAT_TORQUE_KI,
   KP_INTERP as LAT_TORQUE_KP_INTERP,
 )
@@ -20,6 +21,7 @@ TUNE_STEP = {
   "maxLatAccel": 0.10,
   "kpScale": 0.05,
   "kiScale": 0.05,
+  "kdGain": 0.01,
   "ffScale": 0.05,
 }
 TUNE_LIMITS = {
@@ -28,19 +30,20 @@ TUNE_LIMITS = {
   "maxLatAccel": (1.5, 3.5),
   "kpScale": (0.0, 2.0),
   "kiScale": (0.0, 2.0),
+  "kdGain": (0.0, 1.0),
   "ffScale": (0.0, 2.0),
 }
 
 
 @dataclass(frozen=True)
 class FontSizes:
-  title: int = 72
-  subtitle: int = 34
-  section: int = 30
-  row_label: int = 42
-  row_value: int = 54
-  small: int = 28
-  tiny: int = 24
+  title: int = 68
+  subtitle: int = 30
+  section: int = 28
+  row_label: int = 38
+  row_value: int = 48
+  small: int = 26
+  tiny: int = 22
 
 
 @dataclass(frozen=True)
@@ -50,7 +53,6 @@ class Colors:
   MUTED = rl.Color(185, 185, 185, 255)
   PANEL_BG = rl.Color(0, 0, 0, 225)
   CARD_BG = rl.Color(25, 25, 25, 230)
-  BUTTON_BG = rl.Color(255, 255, 255, 40)
   BORDER = rl.Color(255, 255, 255, 75)
   BAR_BG = rl.Color(16, 16, 16, 255)
   BAR_ZERO = rl.Color(255, 255, 255, 220)
@@ -97,7 +99,6 @@ def _interp(x: float, xp: list[float], fp: list[float]) -> float:
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
-    self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
 
@@ -105,10 +106,10 @@ class HudRenderer(Widget):
     for key in TUNE_STEP:
       for direction, text in ((-1, "-"), (1, "+")):
         self._tune_buttons[(key, direction)] = self._child(Button(text, partial(self._adjust_tune, key, direction),
-                                                                  font_size=54,
+                                                                  font_size=50,
                                                                   button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
                                                                   border_radius=10))
-    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=44,
+    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=42,
                                                  button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
 
   def _update_state(self) -> None:
@@ -137,6 +138,7 @@ class HudRenderer(Widget):
       "maxLatAccel": float(ui_state.CP.maxLateralAccel),
       "kpScale": 1.0,
       "kiScale": 1.0,
+      "kdGain": LAT_TORQUE_KD,
       "ffScale": 1.0,
     }
 
@@ -160,16 +162,18 @@ class HudRenderer(Widget):
     return values
 
   def _write_tune_values(self, values: dict[str, float]) -> None:
-    payload = {
+    # TorqueTuneOverride is registered as JSON. Params.put_nonblocking expects a Python dict/list for JSON,
+    # not a pre-serialized JSON string.
+    ui_state.params.put_nonblocking(TORQUE_TUNE_OVERRIDE_PARAM, {
       "enabled": True,
       "latAccelFactor": round(values["latAccelFactor"], 3),
       "friction": round(values["friction"], 3),
       "maxLatAccel": round(values["maxLatAccel"], 3),
       "kpScale": round(values["kpScale"], 3),
       "kiScale": round(values["kiScale"], 3),
+      "kdGain": round(values["kdGain"], 3),
       "ffScale": round(values["ffScale"], 3),
-    }
-    ui_state.params.put_nonblocking(TORQUE_TUNE_OVERRIDE_PARAM, json.dumps(payload))
+    })
 
   def _adjust_tune(self, key: str, direction: int) -> None:
     values = self._tune_values()
@@ -188,20 +192,20 @@ class HudRenderer(Widget):
     rl.draw_text_ex(self._font_medium, text, rl.Vector2(x - text_size.x, y), font_size, 0, color)
 
   def _draw_tune_row(self, x: float, y: float, width: float, label: str, key: str, value: float, help_text: str) -> None:
-    row_h = 88
+    row_h = 76
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, row_h), 0.12, 8, COLORS.CARD_BG)
     rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, row_h), 0.12, 8, 2, COLORS.BORDER)
 
-    rl.draw_text_ex(self._font_medium, label, rl.Vector2(x + 22, y + 17), FONT_SIZES.row_label, 0, COLORS.WHITE)
-    rl.draw_text_ex(self._font_medium, help_text, rl.Vector2(x + 22, y + 58), FONT_SIZES.tiny, 0, COLORS.MUTED)
+    rl.draw_text_ex(self._font_medium, label, rl.Vector2(x + 20, y + 12), FONT_SIZES.row_label, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, help_text, rl.Vector2(x + 20, y + 50), FONT_SIZES.tiny, 0, COLORS.MUTED)
 
     value_text = f"{value:.2f}"
     value_size = measure_text_cached(self._font_bold, value_text, FONT_SIZES.row_value)
-    value_x = x + width - 255 - value_size.x / 2
-    rl.draw_text_ex(self._font_bold, value_text, rl.Vector2(value_x, y + 14), FONT_SIZES.row_value, 0, COLORS.WHITE)
+    value_x = x + width - 250 - value_size.x / 2
+    rl.draw_text_ex(self._font_bold, value_text, rl.Vector2(value_x, y + 10), FONT_SIZES.row_value, 0, COLORS.WHITE)
 
-    self._tune_buttons[(key, -1)].render(rl.Rectangle(x + width - 184, y + 8, 76, 72))
-    self._tune_buttons[(key, 1)].render(rl.Rectangle(x + width - 92, y + 8, 76, 72))
+    self._tune_buttons[(key, -1)].render(rl.Rectangle(x + width - 178, y + 6, 72, 64))
+    self._tune_buttons[(key, 1)].render(rl.Rectangle(x + width - 88, y + 6, 72, 64))
 
   def _draw_signed_component_bar(self, x: float, y: float, width: float, height: float,
                                  values: list[tuple[str, float, rl.Color]], total: float) -> None:
@@ -251,10 +255,10 @@ class HudRenderer(Widget):
   def _draw_bar_legend(self, x: float, y: float, values: list[tuple[str, float, rl.Color]]) -> None:
     cursor_x = x
     for label, value, color in values:
-      rl.draw_rectangle(int(cursor_x), int(y + 7), 20, 20, color)
-      rl.draw_text_ex(self._font_medium, f"{label} {value:+.2f}", rl.Vector2(cursor_x + 30, y),
+      rl.draw_rectangle(int(cursor_x), int(y + 5), 18, 18, color)
+      rl.draw_text_ex(self._font_medium, f"{label} {value:+.2f}", rl.Vector2(cursor_x + 26, y),
                       FONT_SIZES.tiny, 0, COLORS.WHITE)
-      cursor_x += 170
+      cursor_x += 165
 
   def _draw_command_composition(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
     sm = ui_state.sm
@@ -272,10 +276,11 @@ class HudRenderer(Widget):
     torque_cmd = float(sm['carControl'].actuators.torque)
     current_kp = float(_interp(sm['carState'].vEgo, LAT_TORQUE_INTERP_SPEEDS, LAT_TORQUE_KP_INTERP) * values["kpScale"])
     current_ki = float(LAT_TORQUE_KI * values["kiScale"])
+    current_kd = float(values["kdGain"])
 
     rl.draw_text_ex(self._font_medium, "PID + FF lateral-accel command", rl.Vector2(x, y),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"KP {current_kp:.3f}   KI {current_ki:.3f}   ERR {float(torque_state.error):+.2f}",
+    self._draw_text_right(f"KP {current_kp:.3f}   KI {current_ki:.3f}   KD {current_kd:.3f}   ERR {float(torque_state.error):+.2f}",
                           x + width, y, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
 
     components = [
@@ -284,45 +289,47 @@ class HudRenderer(Widget):
       ("D", d_term, COLORS.BAR_D),
       ("FF", f_term, COLORS.BAR_F),
     ]
-    self._draw_signed_component_bar(x, y + 54, width, 54, components, lat_total)
-    self._draw_bar_legend(x, y + 122, components)
-    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 122, FONT_SIZES.tiny, COLORS.MUTED)
+    self._draw_signed_component_bar(x, y + 50, width, 50, components, lat_total)
+    self._draw_bar_legend(x, y + 112, components)
+    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 112, FONT_SIZES.tiny, COLORS.MUTED)
 
-    rl.draw_text_ex(self._font_medium, "After LAT conversion: steering command", rl.Vector2(x, y + 176),
+    rl.draw_text_ex(self._font_medium, "After LAT conversion: steering command", rl.Vector2(x, y + 158),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"CMD {torque_cmd:+.3f}", x + width, y + 176, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_single_bar(x, y + 230, width, 50, torque_cmd)
+    self._draw_text_right(f"CMD {torque_cmd:+.3f}", x + width, y + 158, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_signed_single_bar(x, y + 208, width, 48, torque_cmd)
 
   def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
-    margin = 36
+    margin = 34
     x = rect.x + margin
     y = rect.y + margin
     width = rect.width - 2 * margin
 
     rl.draw_text_ex(self._font_bold, "TORQUE TUNE", rl.Vector2(x, y), FONT_SIZES.title, 0, COLORS.WHITE)
-    rl.draw_text_ex(self._font_medium, "Full-screen driving tuner: model/limit knobs on the left, PID/FF scale knobs on the right.",
-                    rl.Vector2(x, y + 78), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
-    self._tune_reset_button.render(rl.Rectangle(x + width - 140, y + 4, 128, 76))
+    rl.draw_text_ex(self._font_medium, "Fullscreen driving tuner. Left: model and request limits. Right: feedback and feedforward gains.",
+                    rl.Vector2(x, y + 74), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
+    self._tune_reset_button.render(rl.Rectangle(x + width - 138, y + 4, 126, 72))
 
     col_gap = 28
     col_w = (width - col_gap) / 2
     left_x = x
     right_x = x + col_w + col_gap
-    rows_y = y + 142
+    rows_y = y + 130
 
     rl.draw_text_ex(self._font_medium, "MODEL / LIMIT", rl.Vector2(left_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    rl.draw_text_ex(self._font_medium, "PID / FF SCALE", rl.Vector2(right_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_medium, "PID / FF", rl.Vector2(right_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
 
-    row_gap = 18
-    row_h = 88
+    row_gap = 14
+    row_h = 76
     rows = (
-      (("LAT", "latAccelFactor", "accel-to-torque model"), ("KP", "kpScale", "P gain multiplier")),
-      (("F", "friction", "friction in FF"), ("KI", "kiScale", "I gain multiplier")),
-      (("MAX", "maxLatAccel", "request accel cap"), ("FF", "ffScale", "feedforward multiplier")),
+      (("LAT", "latAccelFactor", "accel-to-torque model"), ("KP", "kpScale", "P gain scale")),
+      (("F", "friction", "friction in FF"), ("KI", "kiScale", "I gain scale")),
+      (("MAX", "maxLatAccel", "request accel cap"), ("KD", "kdGain", "D gain on accel-error rate")),
+      (("", "latAccelFactor", ""), ("FF", "ffScale", "feedforward scale")),
     )
     for idx, (left, right) in enumerate(rows):
-      row_y = rows_y + 46 + idx * (row_h + row_gap)
-      self._draw_tune_row(left_x, row_y, col_w, left[0], left[1], values[left[1]], left[2])
+      row_y = rows_y + 42 + idx * (row_h + row_gap)
+      if left[0]:
+        self._draw_tune_row(left_x, row_y, col_w, left[0], left[1], values[left[1]], left[2])
       self._draw_tune_row(right_x, row_y, col_w, right[0], right[1], values[right[1]], right[2])
 
-    self._draw_command_composition(x, rows_y + 386, width, values)
+    self._draw_command_composition(x, rows_y + 418, width, values)
