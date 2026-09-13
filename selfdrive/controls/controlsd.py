@@ -34,6 +34,19 @@ TORQUE_LAT_ACCEL_FACTOR_RANGE = (1.5, 3.5)
 TORQUE_FRICTION_RANGE = (0.0, 0.25)
 TORQUE_MAX_LAT_ACCEL_RANGE = (1.5, 3.5)
 TORQUE_GAIN_SCALE_RANGE = (0.0, 2.0)
+TORQUE_KD_GAIN_RANGE = (0.0, 1.0)
+
+
+def _loads_param_json(raw):
+  if raw is None:
+    return None
+  if isinstance(raw, dict):
+    return raw
+  if isinstance(raw, bytes):
+    raw = raw.decode("utf-8")
+  if isinstance(raw, str):
+    return json.loads(raw)
+  return None
 
 
 class Controls:
@@ -68,8 +81,8 @@ class Controls:
       self.LaC = LatControlTorque(self.CP, self.CI, DT_CTRL)
 
     self._torque_override_update_time = 0.0
-    self._torque_override_raw: bytes | str | None = None
-    self._torque_override_values: tuple[float, float, float, float, float, float] | None = None
+    self._torque_override_raw: dict | bytes | str | None = None
+    self._torque_override_values: tuple[float, float, float, float, float, float, float] | None = None
 
   def update(self):
     self.sm.update(15)
@@ -100,9 +113,9 @@ class Controls:
                                            torque_params.frictionCoefficientFiltered)
       self._update_torque_tune_override()
       if self._torque_override_values is not None:
-        lat_accel_factor, friction, max_lat_accel, kp_scale, ki_scale, ff_scale = self._torque_override_values
+        lat_accel_factor, friction, max_lat_accel, kp_scale, ki_scale, kd_gain, ff_scale = self._torque_override_values
         torque_override_max_lat_accel = max_lat_accel
-        self.LaC.update_live_torque_params(lat_accel_factor, 0.0, friction, kp_scale, ki_scale, ff_scale)
+        self.LaC.update_live_torque_params(lat_accel_factor, 0.0, friction, kp_scale, ki_scale, kd_gain, ff_scale)
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -182,8 +195,8 @@ class Controls:
       return
 
     try:
-      override = json.loads(raw_override.decode("utf-8") if isinstance(raw_override, bytes) else raw_override)
-      if not override.get("enabled", False):
+      override = _loads_param_json(raw_override)
+      if not isinstance(override, dict) or not override.get("enabled", False):
         return
 
       lat_accel_factor = float(override["latAccelFactor"])
@@ -191,6 +204,7 @@ class Controls:
       max_lat_accel = float(override.get("maxLatAccel", self.CP.maxLateralAccel))
       kp_scale = float(override.get("kpScale", 1.0))
       ki_scale = float(override.get("kiScale", 1.0))
+      kd_gain = float(override.get("kdGain", 0.0))
       ff_scale = float(override.get("ffScale", 1.0))
       if not TORQUE_LAT_ACCEL_FACTOR_RANGE[0] <= lat_accel_factor <= TORQUE_LAT_ACCEL_FACTOR_RANGE[1]:
         raise ValueError("latAccelFactor out of range")
@@ -201,10 +215,13 @@ class Controls:
       for name, scale in (("kpScale", kp_scale), ("kiScale", ki_scale), ("ffScale", ff_scale)):
         if not TORQUE_GAIN_SCALE_RANGE[0] <= scale <= TORQUE_GAIN_SCALE_RANGE[1]:
           raise ValueError(f"{name} out of range")
+      if not TORQUE_KD_GAIN_RANGE[0] <= kd_gain <= TORQUE_KD_GAIN_RANGE[1]:
+        raise ValueError("kdGain out of range")
 
-      self._torque_override_values = (lat_accel_factor, friction, max_lat_accel, kp_scale, ki_scale, ff_scale)
+      self._torque_override_values = (lat_accel_factor, friction, max_lat_accel, kp_scale, ki_scale, kd_gain, ff_scale)
       cloudlog.warning(f"Using torque tune override: latAccelFactor={lat_accel_factor:.3f}, friction={friction:.3f}, "
-                       f"maxLatAccel={max_lat_accel:.3f}, kpScale={kp_scale:.3f}, kiScale={ki_scale:.3f}, ffScale={ff_scale:.3f}")
+                       f"maxLatAccel={max_lat_accel:.3f}, kpScale={kp_scale:.3f}, kiScale={ki_scale:.3f}, "
+                       f"kdGain={kd_gain:.3f}, ffScale={ff_scale:.3f}")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
       cloudlog.exception(f"Invalid {TORQUE_TUNE_OVERRIDE_PARAM}")
 
