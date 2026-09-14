@@ -207,34 +207,64 @@ class HudRenderer(Widget):
     self._tune_buttons[(key, -1)].render(rl.Rectangle(x + width - 178, y + 6, 72, 64))
     self._tune_buttons[(key, 1)].render(rl.Rectangle(x + width - 88, y + 6, 72, 64))
 
-  def _draw_signed_component_bar(self, x: float, y: float, width: float, height: float,
-                                 values: list[tuple[str, float, rl.Color]], total: float) -> None:
-    center_x = int(x + width / 2)
-    half_width = int(width / 2 - 10)
+  def _component_scale(self, values: list[tuple[str, float, rl.Color]], total: float) -> float:
     pos_sum = sum(max(value, 0.0) for _, value, _ in values)
     neg_sum = abs(sum(min(value, 0.0) for _, value, _ in values))
-    scale = max(0.25, abs(total), pos_sum, neg_sum)
+    return max(0.25, abs(total), pos_sum, neg_sum)
 
-    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.18, 8, COLORS.BAR_BG)
-    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.18, 8, 2, COLORS.BORDER)
-    rl.draw_line(center_x, int(y - 7), center_x, int(y + height + 7), COLORS.BAR_ZERO)
+  def _value_to_x(self, center_x: int, half_width: int, value: float, scale: float) -> int:
+    return int(center_x + _clamp(value / scale, -1.0, 1.0) * half_width)
 
-    pos_x = center_x
-    neg_x = center_x
-    for _, value, color in values:
-      segment_width = int(abs(value) / scale * half_width)
-      if segment_width <= 0:
-        continue
-      if value >= 0.0:
-        rl.draw_rectangle(pos_x, int(y + 5), segment_width, int(height - 10), color)
-        pos_x += segment_width
-      else:
-        neg_x -= segment_width
-        rl.draw_rectangle(neg_x, int(y + 5), segment_width, int(height - 10), color)
+  def _draw_component_segment(self, x0: int, x1: int, y: float, height: float, color: rl.Color) -> None:
+    left = min(x0, x1)
+    width = abs(x1 - x0)
+    if width > 0:
+      rl.draw_rectangle(left, int(y + 4), width, int(height - 8), color)
 
-    total_x = int(center_x + _clamp(total / scale, -1.0, 1.0) * half_width)
-    rl.draw_line(total_x, int(y - 11), total_x, int(y + height + 11), COLORS.BAR_MARKER)
-    rl.draw_circle(total_x, int(y + height / 2), 7.0, COLORS.BAR_MARKER)
+  def _draw_signed_component_bar(self, x: float, y: float, width: float, values: list[tuple[str, float, rl.Color]], total: float) -> None:
+    center_x = int(x + width / 2)
+    half_width = int(width / 2 - 10)
+    scale = self._component_scale(values, total)
+    main_h = 56
+    oppose_h = 24
+    oppose_y = y + main_h + 12
+    total_sign = 1.0 if total >= 0.0 else -1.0
+
+    aligned = [(label, value, color) for label, value, color in values if value * total_sign >= 0.0]
+    opposing = [(label, value, color) for label, value, color in values if value * total_sign < 0.0]
+    oppose_sum = sum(value for _, value, _ in opposing)
+
+    main_rect = rl.Rectangle(x, y, width, main_h)
+    oppose_rect = rl.Rectangle(x, oppose_y, width, oppose_h)
+    rl.draw_rectangle_rounded(main_rect, 0.18, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(main_rect, 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_rectangle_rounded(oppose_rect, 0.18, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(oppose_rect, 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_line(center_x, int(y - 7), center_x, int(oppose_y + oppose_h + 7), COLORS.BAR_ZERO)
+
+    # Thin lower bar: components opposing the final controller output, stacked away from zero.
+    running = 0.0
+    for _, value, color in opposing:
+      next_running = running + value
+      self._draw_component_segment(self._value_to_x(center_x, half_width, running, scale),
+                                   self._value_to_x(center_x, half_width, next_running, scale),
+                                   oppose_y, oppose_h, color)
+      running = next_running
+
+    # Thick upper bar: components that agree with the final output, starting at the opposition endpoint.
+    running = oppose_sum
+    for _, value, color in aligned:
+      next_running = running + value
+      self._draw_component_segment(self._value_to_x(center_x, half_width, running, scale),
+                                   self._value_to_x(center_x, half_width, next_running, scale),
+                                   y, main_h, color)
+      running = next_running
+
+    oppose_x = self._value_to_x(center_x, half_width, oppose_sum, scale)
+    total_x = self._value_to_x(center_x, half_width, total, scale)
+    rl.draw_line(oppose_x, int(y - 5), oppose_x, int(oppose_y + oppose_h + 5), COLORS.MUTED)
+    rl.draw_line(total_x, int(y - 11), total_x, int(y + main_h + 11), COLORS.BAR_MARKER)
+    rl.draw_circle(total_x, int(y + main_h / 2), 7.0, COLORS.BAR_MARKER)
 
   def _draw_signed_single_bar(self, x: float, y: float, width: float, height: float, value: float, limit: float = 1.0) -> None:
     center_x = int(x + width / 2)
@@ -289,14 +319,14 @@ class HudRenderer(Widget):
       ("D", d_term, COLORS.BAR_D),
       ("FF", f_term, COLORS.BAR_F),
     ]
-    self._draw_signed_component_bar(x, y + 50, width, 50, components, lat_total)
-    self._draw_bar_legend(x, y + 112, components)
-    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 112, FONT_SIZES.tiny, COLORS.MUTED)
+    self._draw_signed_component_bar(x, y + 50, width, components, lat_total)
+    self._draw_bar_legend(x, y + 150, components)
+    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 150, FONT_SIZES.tiny, COLORS.MUTED)
 
-    rl.draw_text_ex(self._font_medium, "After LAT conversion: steering command", rl.Vector2(x, y + 158),
+    rl.draw_text_ex(self._font_medium, "After LAT conversion: normalized steering torque command", rl.Vector2(x, y + 194),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"CMD {torque_cmd:+.3f}", x + width, y + 158, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_single_bar(x, y + 208, width, 48, torque_cmd)
+    self._draw_text_right(f"TORQUE CMD {torque_cmd:+.3f}", x + width, y + 194, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_signed_single_bar(x, y + 244, width, 48, torque_cmd)
 
   def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
     margin = 34
