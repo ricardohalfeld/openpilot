@@ -303,7 +303,8 @@ class HudRenderer(Widget):
     d_term = float(torque_state.d)
     f_term = float(torque_state.f)
     lat_total = p_term + i_term + d_term + f_term
-    torque_cmd = float(sm['carControl'].actuators.torque)
+    torque_cmd_raw = float(sm['carControl'].actuators.torque)
+    torque_cmd_display = -torque_cmd_raw
     current_kp = float(_interp(sm['carState'].vEgo, LAT_TORQUE_INTERP_SPEEDS, LAT_TORQUE_KP_INTERP) * values["kpScale"])
     current_ki = float(LAT_TORQUE_KI * values["kiScale"])
     current_kd = float(values["kdGain"])
@@ -323,10 +324,11 @@ class HudRenderer(Widget):
     self._draw_bar_legend(x, y + 150, components)
     self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 150, FONT_SIZES.tiny, COLORS.MUTED)
 
-    rl.draw_text_ex(self._font_medium, "After LAT conversion: normalized steering torque command", rl.Vector2(x, y + 194),
+    rl.draw_text_ex(self._font_medium, "After LAT conversion: model torque before OP sign flip", rl.Vector2(x, y + 194),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"TORQUE CMD {torque_cmd:+.3f}", x + width, y + 194, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_single_bar(x, y + 244, width, 48, torque_cmd)
+    self._draw_text_right(f"MODEL {torque_cmd_display:+.3f}   OP CMD {torque_cmd_raw:+.3f}",
+                          x + width, y + 194, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_signed_single_bar(x, y + 244, width, 48, torque_cmd_display)
 
   def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
     margin = 34
