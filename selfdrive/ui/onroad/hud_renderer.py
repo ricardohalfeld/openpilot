@@ -52,6 +52,7 @@ class Colors:
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 210)
   MUTED = rl.Color(185, 185, 185, 255)
   PANEL_BG = rl.Color(0, 0, 0, 225)
+  OVERLAY_BG = rl.Color(0, 0, 0, 238)
   CARD_BG = rl.Color(25, 25, 25, 230)
   BORDER = rl.Color(255, 255, 255, 75)
   BAR_BG = rl.Color(16, 16, 16, 255)
@@ -101,6 +102,7 @@ class HudRenderer(Widget):
     super().__init__()
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+    self._show_tune_controls = False
 
     self._tune_buttons: dict[tuple[str, int], Button] = {}
     for key in TUNE_STEP:
@@ -109,6 +111,10 @@ class HudRenderer(Widget):
                                                                   font_size=50,
                                                                   button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
                                                                   border_radius=10))
+    self._edit_button = self._child(Button("EDIT", self._toggle_tune_controls, font_size=42,
+                                           button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
+    self._plot_button = self._child(Button("PLOT", self._toggle_tune_controls, font_size=42,
+                                           button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
     self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=42,
                                                  button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
 
@@ -126,6 +132,9 @@ class HudRenderer(Widget):
   def user_interacting(self) -> bool:
     # The fullscreen tuner owns the onroad screen. Do not let touches fall through to the main layout.
     return True
+
+  def _toggle_tune_controls(self) -> None:
+    self._show_tune_controls = not self._show_tune_controls
 
   def _default_tune_values(self) -> dict[str, float] | None:
     if ui_state.CP is None or ui_state.CP.lateralTuning.which() != "torque":
@@ -225,9 +234,9 @@ class HudRenderer(Widget):
     center_x = int(x + width / 2)
     half_width = int(width / 2 - 10)
     scale = self._component_scale(values, total)
-    main_h = 56
-    oppose_h = 24
-    oppose_y = y + main_h + 12
+    main_h = 108
+    oppose_h = 38
+    oppose_y = y + main_h + 16
     total_sign = 1.0 if total >= 0.0 else -1.0
 
     aligned = [(label, value, color) for label, value, color in values if value * total_sign >= 0.0]
@@ -236,8 +245,8 @@ class HudRenderer(Widget):
 
     main_rect = rl.Rectangle(x, y, width, main_h)
     oppose_rect = rl.Rectangle(x, oppose_y, width, oppose_h)
-    rl.draw_rectangle_rounded(main_rect, 0.18, 8, COLORS.BAR_BG)
-    rl.draw_rectangle_rounded_lines_ex(main_rect, 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_rectangle_rounded(main_rect, 0.14, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(main_rect, 0.14, 8, 2, COLORS.BORDER)
     rl.draw_rectangle_rounded(oppose_rect, 0.18, 8, COLORS.BAR_BG)
     rl.draw_rectangle_rounded_lines_ex(oppose_rect, 0.18, 8, 2, COLORS.BORDER)
     rl.draw_line(center_x, int(y - 7), center_x, int(oppose_y + oppose_h + 7), COLORS.BAR_ZERO)
@@ -264,7 +273,7 @@ class HudRenderer(Widget):
     total_x = self._value_to_x(center_x, half_width, total, scale)
     rl.draw_line(oppose_x, int(y - 5), oppose_x, int(oppose_y + oppose_h + 5), COLORS.MUTED)
     rl.draw_line(total_x, int(y - 11), total_x, int(y + main_h + 11), COLORS.BAR_MARKER)
-    rl.draw_circle(total_x, int(y + main_h / 2), 7.0, COLORS.BAR_MARKER)
+    rl.draw_circle(total_x, int(y + main_h / 2), 9.0, COLORS.BAR_MARKER)
 
   def _draw_signed_single_bar(self, x: float, y: float, width: float, height: float, value: float, limit: float = 1.0) -> None:
     center_x = int(x + width / 2)
@@ -274,13 +283,13 @@ class HudRenderer(Widget):
     bar_x = min(center_x, end_x)
     bar_w = abs(end_x - center_x)
 
-    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.18, 8, COLORS.BAR_BG)
-    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.14, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.14, 8, 2, COLORS.BORDER)
     rl.draw_line(center_x, int(y - 7), center_x, int(y + height + 7), COLORS.BAR_ZERO)
     if bar_w > 0:
-      rl.draw_rectangle(bar_x, int(y + 5), bar_w, int(height - 10), COLORS.BAR_CMD)
+      rl.draw_rectangle(bar_x, int(y + 6), bar_w, int(height - 12), COLORS.BAR_CMD)
     rl.draw_line(end_x, int(y - 11), end_x, int(y + height + 11), COLORS.BAR_MARKER)
-    rl.draw_circle(end_x, int(y + height / 2), 7.0, COLORS.BAR_MARKER)
+    rl.draw_circle(end_x, int(y + height / 2), 9.0, COLORS.BAR_MARKER)
 
   def _draw_bar_legend(self, x: float, y: float, values: list[tuple[str, float, rl.Color]]) -> None:
     cursor_x = x
@@ -289,6 +298,17 @@ class HudRenderer(Widget):
       rl.draw_text_ex(self._font_medium, f"{label} {value:+.2f}", rl.Vector2(cursor_x + 26, y),
                       FONT_SIZES.tiny, 0, COLORS.WHITE)
       cursor_x += 165
+
+  def _draw_current_tune_values(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
+    labels = (
+      ("LAT", "latAccelFactor"), ("F", "friction"), ("MAX", "maxLatAccel"),
+      ("KP", "kpScale"), ("KI", "kiScale"), ("KD", "kdGain"), ("FF", "ffScale"),
+    )
+    cursor_x = x
+    gap = width / len(labels)
+    for label, key in labels:
+      rl.draw_text_ex(self._font_medium, f"{label} {values[key]:.2f}", rl.Vector2(cursor_x, y), FONT_SIZES.small, 0, COLORS.MUTED)
+      cursor_x += gap
 
   def _draw_command_composition(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
     sm = ui_state.sm
@@ -321,31 +341,31 @@ class HudRenderer(Widget):
       ("FF", f_term, COLORS.BAR_F),
     ]
     self._draw_signed_component_bar(x, y + 50, width, components, lat_total)
-    self._draw_bar_legend(x, y + 150, components)
-    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 150, FONT_SIZES.tiny, COLORS.MUTED)
+    self._draw_bar_legend(x, y + 222, components)
+    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 222, FONT_SIZES.tiny, COLORS.MUTED)
 
-    rl.draw_text_ex(self._font_medium, "After LAT conversion: model torque before OP sign flip", rl.Vector2(x, y + 194),
+    rl.draw_text_ex(self._font_medium, "After LAT conversion: model torque before OP sign flip", rl.Vector2(x, y + 272),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
     self._draw_text_right(f"MODEL {torque_cmd_display:+.3f}   OP CMD {torque_cmd_raw:+.3f}",
-                          x + width, y + 194, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_single_bar(x, y + 244, width, 48, torque_cmd_display)
+                          x + width, y + 272, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
+    self._draw_signed_single_bar(x, y + 326, width, 84, torque_cmd_display)
 
-  def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
-    margin = 34
-    x = rect.x + margin
-    y = rect.y + margin
-    width = rect.width - 2 * margin
+  def _draw_tune_controls_overlay(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
+    overlay_h = 486
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, overlay_h), 0.05, 10, COLORS.OVERLAY_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, overlay_h), 0.05, 10, 2, COLORS.BORDER)
 
-    rl.draw_text_ex(self._font_bold, "TORQUE TUNE", rl.Vector2(x, y), FONT_SIZES.title, 0, COLORS.WHITE)
-    rl.draw_text_ex(self._font_medium, "Fullscreen driving tuner. Left: model and request limits. Right: feedback and feedforward gains.",
-                    rl.Vector2(x, y + 74), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
-    self._tune_reset_button.render(rl.Rectangle(x + width - 138, y + 4, 126, 72))
+    self._plot_button.render(rl.Rectangle(x + width - 286, y + 16, 126, 72))
+    self._tune_reset_button.render(rl.Rectangle(x + width - 144, y + 16, 126, 72))
+    rl.draw_text_ex(self._font_bold, "EDIT GAINS", rl.Vector2(x + 24, y + 22), FONT_SIZES.title, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "Plus/minus controls are temporary; press PLOT to return to the full plot view.",
+                    rl.Vector2(x + 24, y + 96), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
 
     col_gap = 28
-    col_w = (width - col_gap) / 2
-    left_x = x
-    right_x = x + col_w + col_gap
-    rows_y = y + 130
+    col_w = (width - 48 - col_gap) / 2
+    left_x = x + 24
+    right_x = left_x + col_w + col_gap
+    rows_y = y + 152
 
     rl.draw_text_ex(self._font_medium, "MODEL / LIMIT", rl.Vector2(left_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
     rl.draw_text_ex(self._font_medium, "PID / FF", rl.Vector2(right_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
@@ -364,4 +384,20 @@ class HudRenderer(Widget):
         self._draw_tune_row(left_x, row_y, col_w, left[0], left[1], values[left[1]], left[2])
       self._draw_tune_row(right_x, row_y, col_w, right[0], right[1], values[right[1]], right[2])
 
-    self._draw_command_composition(x, rows_y + 418, width, values)
+  def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
+    margin = 34
+    x = rect.x + margin
+    y = rect.y + margin
+    width = rect.width - 2 * margin
+
+    rl.draw_text_ex(self._font_bold, "TORQUE TUNE", rl.Vector2(x, y), FONT_SIZES.title, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "Plot-first driving view. Press EDIT only when you want the plus/minus controls.",
+                    rl.Vector2(x, y + 74), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
+    if not self._show_tune_controls:
+      self._edit_button.render(rl.Rectangle(x + width - 138, y + 4, 126, 72))
+
+    self._draw_command_composition(x, y + 126, width, values)
+    self._draw_current_tune_values(x, y + 566, width, values)
+
+    if self._show_tune_controls:
+      self._draw_tune_controls_overlay(x, y + 92, width, values)
