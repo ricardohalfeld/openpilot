@@ -128,7 +128,11 @@ class VCruiseHelper:
     if self.CP.pcmCruise:
       return
 
-    initial = V_CRUISE_INITIAL_EXPERIMENTAL_MODE if experimental_mode else V_CRUISE_INITIAL
+    # Allow engagement at the current speed above 10 km/h in normal mode.
+    # Preserve the existing 40 km/h minimum at or below 10 km/h, and
+    # retain the experimental mode's separate initial speed behavior.
+    v_ego_kph = CS.vEgo * CV.MS_TO_KPH
+    initial = V_CRUISE_INITIAL_EXPERIMENTAL_MODE if experimental_mode else (v_ego_kph if v_ego_kph > 10 else V_CRUISE_INITIAL)
 
     if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
