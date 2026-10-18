@@ -1,4 +1,5 @@
 import json
+import math
 import pyray as rl
 from functools import partial
 from dataclasses import dataclass
@@ -111,11 +112,11 @@ class HudRenderer(Widget):
                                                                   font_size=50,
                                                                   button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
                                                                   border_radius=10))
-    self._edit_button = self._child(Button("EDIT", self._toggle_tune_controls, font_size=42,
+    self._edit_button = self._child(Button("EDIT", self._toggle_tune_controls, font_size=30,
                                            button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
-    self._plot_button = self._child(Button("PLOT", self._toggle_tune_controls, font_size=42,
+    self._plot_button = self._child(Button("PLOT", self._toggle_tune_controls, font_size=30,
                                            button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
-    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=42,
+    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=30,
                                                  button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
 
   def _update_state(self) -> None:
@@ -299,64 +300,106 @@ class HudRenderer(Widget):
                       FONT_SIZES.tiny, 0, COLORS.WHITE)
       cursor_x += 165
 
-  def _draw_current_tune_values(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
-    labels = (
+  def _draw_steering_wheel(self, x: float, y: float, radius: float) -> None:
+    # carState.steeringAngleDeg is the actual steering-wheel angle, not the road-wheel angle.
+    angle_deg = float(ui_state.sm['carState'].steeringAngleDeg)
+    angle = math.radians(-angle_deg)
+    cx, cy = int(x), int(y)
+    outer = int(radius)
+    rl.draw_circle_lines(cx, cy, outer, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_circle_lines(cx, cy, int(radius * 0.80), COLORS.MUTED)
+
+    def point(theta: float, distance: float) -> rl.Vector2:
+      return rl.Vector2(cx + math.cos(theta) * distance, cy + math.sin(theta) * distance)
+
+    # Three-spoke steering wheel; the spoke layout rotates with the reported steering angle.
+    for spoke in (math.pi / 2, 7 * math.pi / 6, 11 * math.pi / 6):
+      theta = spoke + angle
+      rl.draw_line_ex(point(theta, radius * 0.17), point(theta, radius * 0.83), 9.0, COLORS.WHITE)
+    rl.draw_circle(cx, cy, radius * 0.21, COLORS.CARD_BG)
+    rl.draw_circle_lines(cx, cy, radius * 0.21, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "STEERING WHEEL", rl.Vector2(cx - radius, cy + radius + 12),
+                    FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_bold, f"{angle_deg:+.1f} deg", rl.Vector2(cx - radius, cy + radius + 50),
+                    FONT_SIZES.row_label, 0, COLORS.WHITE)
+
+  def _draw_legends(self, x: float, y: float, width: float, values: dict[str, float],
+                    components: list[tuple[str, float, rl.Color]], lat_total: float,
+                    torque_model: float, torque_op: float) -> None:
+    rl.draw_text_ex(self._font_bold, "LIVE COMPONENTS", rl.Vector2(x, y), FONT_SIZES.section, 0, COLORS.WHITE)
+    col_w = width / 2
+    for idx, (label, value, color) in enumerate(components):
+      col = idx % 2
+      row = idx // 2
+      sx = x + col * col_w
+      sy = y + 52 + row * 50
+      rl.draw_rectangle(int(sx), int(sy + 6), 24, 24, color)
+      rl.draw_text_ex(self._font_medium, f"{label} {value:+.3f}", rl.Vector2(sx + 36, sy),
+                      FONT_SIZES.section, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, f"PID+FF {lat_total:+.3f} m/s²", rl.Vector2(x, y + 168),
+                    FONT_SIZES.section, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, f"MODEL {torque_model:+.3f}    OP {torque_op:+.3f}",
+                    rl.Vector2(x, y + 214), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_medium, "TUNING VALUES", rl.Vector2(x, y + 282),
+                    FONT_SIZES.section, 0, COLORS.MUTED)
+    entries = (
       ("LAT", "latAccelFactor"), ("F", "friction"), ("MAX", "maxLatAccel"),
       ("KP", "kpScale"), ("KI", "kiScale"), ("KD", "kdGain"), ("FF", "ffScale"),
     )
-    cursor_x = x
-    gap = width / len(labels)
-    for label, key in labels:
-      rl.draw_text_ex(self._font_medium, f"{label} {values[key]:.2f}", rl.Vector2(cursor_x, y), FONT_SIZES.small, 0, COLORS.MUTED)
-      cursor_x += gap
+    for idx, (label, key) in enumerate(entries):
+      col = idx % 4
+      row = idx // 4
+      rl.draw_text_ex(self._font_medium, f"{label} {values[key]:.2f}",
+                      rl.Vector2(x + col * width / 4, y + 326 + row * 45),
+                      FONT_SIZES.small, 0, COLORS.WHITE_TRANSLUCENT)
 
-  def _draw_command_composition(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
+  def _draw_command_composition(self, x: float, y: float, width: float, height: float,
+                                values: dict[str, float]) -> None:
     sm = ui_state.sm
     lateral_state = sm['controlsState'].lateralControlState
     if lateral_state.which() != "torqueState":
-      rl.draw_text_ex(self._font_medium, "Waiting for torqueState", rl.Vector2(x, y), FONT_SIZES.section, 0, COLORS.MUTED)
+      rl.draw_text_ex(self._font_medium, "Waiting for torqueState", rl.Vector2(x, y),
+                      FONT_SIZES.section, 0, COLORS.MUTED)
       return
 
     torque_state = lateral_state.torqueState
-    p_term = float(torque_state.p)
-    i_term = float(torque_state.i)
-    d_term = float(torque_state.d)
-    f_term = float(torque_state.f)
-    lat_total = p_term + i_term + d_term + f_term
-    torque_cmd_raw = float(sm['carControl'].actuators.torque)
-    torque_cmd_display = -torque_cmd_raw
-    current_kp = float(_interp(sm['carState'].vEgo, LAT_TORQUE_INTERP_SPEEDS, LAT_TORQUE_KP_INTERP) * values["kpScale"])
-    current_ki = float(LAT_TORQUE_KI * values["kiScale"])
-    current_kd = float(values["kdGain"])
-
-    rl.draw_text_ex(self._font_medium, "PID + FF lateral-accel command", rl.Vector2(x, y),
-                    FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"KP {current_kp:.3f}   KI {current_ki:.3f}   KD {current_kd:.3f}   ERR {float(torque_state.error):+.2f}",
-                          x + width, y, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
-
     components = [
-      ("P", p_term, COLORS.BAR_P),
-      ("I", i_term, COLORS.BAR_I),
-      ("D", d_term, COLORS.BAR_D),
-      ("FF", f_term, COLORS.BAR_F),
+      ("P", float(torque_state.p), COLORS.BAR_P),
+      ("I", float(torque_state.i), COLORS.BAR_I),
+      ("D", float(torque_state.d), COLORS.BAR_D),
+      ("FF", float(torque_state.f), COLORS.BAR_F),
     ]
-    self._draw_signed_component_bar(x, y + 50, width, components, lat_total)
-    self._draw_bar_legend(x, y + 222, components)
-    self._draw_text_right(f"SUM {lat_total:+.2f} m/s²", x + width, y + 222, FONT_SIZES.tiny, COLORS.MUTED)
+    lat_total = sum(value for _, value, _ in components)
+    torque_op = float(sm['carControl'].actuators.torque)
+    torque_model = -torque_op
 
-    rl.draw_text_ex(self._font_medium, "After LAT conversion: model torque before OP sign flip", rl.Vector2(x, y + 272),
-                    FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
-    self._draw_text_right(f"MODEL {torque_cmd_display:+.3f}   OP CMD {torque_cmd_raw:+.3f}",
-                          x + width, y + 272, FONT_SIZES.small, COLORS.WHITE_TRANSLUCENT)
-    self._draw_signed_single_bar(x, y + 326, width, 84, torque_cmd_display)
+    rl.draw_text_ex(self._font_medium, "PID + FF  |  lateral acceleration (m/s²)", rl.Vector2(x, y),
+                    FONT_SIZES.section, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "Aligned terms / opposing terms", rl.Vector2(x, y + 36),
+                    FONT_SIZES.small, 0, COLORS.MUTED)
+    # First two tracks share the same acceleration scale and sign convention.
+    self._draw_signed_component_bar(x, y + 78, width, components, lat_total)
+
+    torque_y = y + 260
+    rl.draw_text_ex(self._font_medium, "MODEL TORQUE  |  normalized command before OP sign flip",
+                    rl.Vector2(x, torque_y), FONT_SIZES.section, 0, COLORS.WHITE)
+    # The torque track has its own fixed [-1, +1] scale, unlike the acceleration tracks.
+    self._draw_signed_single_bar(x, torque_y + 48, width, 74, torque_model)
+
+    bottom_y = y + 410
+    legend_width = width * 0.49
+    self._draw_legends(x, bottom_y, legend_width, values, components, lat_total, torque_model, torque_op)
+    remaining_h = max(240.0, height - (bottom_y - y))
+    wheel_radius = min(width * 0.095, remaining_h * 0.30, 150.0)
+    self._draw_steering_wheel(x + width * 0.75, bottom_y + wheel_radius + 24, wheel_radius)
 
   def _draw_tune_controls_overlay(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
     overlay_h = 486
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, overlay_h), 0.05, 10, COLORS.OVERLAY_BG)
     rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, overlay_h), 0.05, 10, 2, COLORS.BORDER)
 
-    self._plot_button.render(rl.Rectangle(x + width - 286, y + 16, 126, 72))
-    self._tune_reset_button.render(rl.Rectangle(x + width - 144, y + 16, 126, 72))
+    self._plot_button.render(rl.Rectangle(x + width - 314, y + 16, 144, 72))
+    self._tune_reset_button.render(rl.Rectangle(x + width - 160, y + 16, 144, 72))
     rl.draw_text_ex(self._font_bold, "EDIT GAINS", rl.Vector2(x + 24, y + 22), FONT_SIZES.title, 0, COLORS.WHITE)
     rl.draw_text_ex(self._font_medium, "Plus/minus controls are temporary; press PLOT to return to the full plot view.",
                     rl.Vector2(x + 24, y + 96), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
@@ -391,13 +434,10 @@ class HudRenderer(Widget):
     width = rect.width - 2 * margin
 
     rl.draw_text_ex(self._font_bold, "TORQUE TUNE", rl.Vector2(x, y), FONT_SIZES.title, 0, COLORS.WHITE)
-    rl.draw_text_ex(self._font_medium, "Plot-first driving view. Press EDIT only when you want the plus/minus controls.",
-                    rl.Vector2(x, y + 74), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
     if not self._show_tune_controls:
-      self._edit_button.render(rl.Rectangle(x + width - 138, y + 4, 126, 72))
+      self._edit_button.render(rl.Rectangle(x + width - 164, y + 4, 150, 72))
 
-    self._draw_command_composition(x, y + 126, width, values)
-    self._draw_current_tune_values(x, y + 566, width, values)
+    self._draw_command_composition(x, y + 100, width, rect.height - 140, values)
 
     if self._show_tune_controls:
       self._draw_tune_controls_overlay(x, y + 92, width, values)
