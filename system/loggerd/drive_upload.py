@@ -4,10 +4,11 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import time
 
+from cereal import log
+from openpilot.system.hardware import HARDWARE
 from openpilot.system.hardware.hw import Paths
 
 STATE_DIR = Path("/data/drive_upload")
@@ -95,14 +96,22 @@ def upload_one(segment, path):
     return False
 
 
+def wifi_connected():
+  # Hardware network type distinguishes Wi-Fi from cellular transport.
+  try:
+    return HARDWARE.get_network_type() == log.DeviceState.NetworkType.wifi
+  except Exception:
+    return False
+
+
 def run_once():
   # Uploading while driving is intentionally disabled.
   from openpilot.common.params import Params
-  if Params().get_bool("IsOnroad"):
+  if Params().get_bool("IsOnroad") or not wifi_connected():
     return
   state = read_json(STATE_PATH, {})
   for segment, path in eligible_files():
-    if Params().get_bool("IsOnroad"):
+    if Params().get_bool("IsOnroad") or not wifi_connected():
       break
     key = f"{segment}/{path.name}"
     try:
@@ -127,7 +136,7 @@ def main():
   commands.add_parser("once")
   args = parser.parse_args()
   if args.command == "video":
-    if "/" in args.route or ".." in args.route or "--" in args.route:
+    if "/" in args.route or "\\\\" in args.route or ".." in args.route or not args.route:
       parser.error("Provide a route ID, not a segment or path")
     set_video_route(args.route, args.action == "on")
     return
