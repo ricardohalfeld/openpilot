@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import subprocess
 import time
 
 from cereal import log
@@ -14,9 +13,6 @@ from openpilot.system.hardware.hw import Paths
 STATE_DIR = Path("/data/drive_upload")
 STATE_PATH = STATE_DIR / "state.json"
 SELECT_PATH = STATE_DIR / "video_routes.json"
-CONFIG_PATH = STATE_DIR / "rclone.conf"
-RCLONE = "/data/drive_upload/rclone"
-REMOTE = "drive:openpilot"
 LOG_NAMES = ("rlog.zst", "qlog.zst")
 VIDEO_NAMES = ("fcamera.hevc", "dcamera.hevc", "ecamera.hevc")
 MIN_IDLE_SECONDS = 120
@@ -81,18 +77,14 @@ def eligible_files():
 
 
 def upload_one(segment, path):
-  # Never invoke a shell, and never keep authentication material in Git.
-  if not CONFIG_PATH.is_file() or not Path(RCLONE).is_file():
-    return False
-  dest = f"{REMOTE}/{segment}/{path.name}"
+  # Direct Drive API: no rclone installation or password required.
   try:
-    subprocess.run([RCLONE, "--config", str(CONFIG_PATH),
-                    "--transfers", "1", "--checkers", "1",
-                    "--retries", "2", "--timeout", "90s",
-                    "copyto", str(path), dest],
-                   timeout=900, check=True, capture_output=True)
+    from openpilot.system.loggerd.drive_api import upload
+    upload(path, segment)
     return True
-  except (OSError, subprocess.SubprocessError):
+  except Exception:
+    import traceback
+    traceback.print_exc()
     return False
 
 
