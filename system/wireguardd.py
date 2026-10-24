@@ -21,9 +21,9 @@ def installed():
 
 def active():
   try:
-    result = subprocess.run(["wg", "show", INTERFACE, "interfaces"], capture_output=True,
+    result = subprocess.run(["wg", "show", "interfaces"], capture_output=True,
                             text=True, timeout=5, check=False)
-    return result.returncode == 0
+    return result.returncode == 0 and INTERFACE in result.stdout.split()
   except OSError:
     return False
 
