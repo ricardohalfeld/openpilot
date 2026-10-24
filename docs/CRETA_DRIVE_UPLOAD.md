@@ -19,7 +19,10 @@ Put ONLY the OAuth **client ID** into `/data/drive_upload/client_id`. The client
 ID is public, not your Google password. Do not commit tokens or credentials.
 Protect `/data/drive_upload/google_token.json` (mode 0600).
 
-## Pairing (current CLI prototype)
+## Pairing on the comma screen
+With the vehicle parked and Wi-Fi connected, open **Settings > Device > Google Drive > CONNECT**. The row displays a Google verification URL and user code. Visit that URL from your phone and authorize the application. This flow requires the configured OAuth client ID below. The UI has not yet been tested on actual comma hardware.
+
+## Pairing via CLI (fallback)
 On the comma, offroad with Wi-Fi, execute:
 
 ```sh
@@ -40,9 +43,8 @@ python3 -m openpilot.system.loggerd.drive_upload video 'ROUTE-ID' off
 ```
 
 ## Limitations and safety
-- **No pairing or video checkbox exists in the comma UI yet**. The CLI method
-  still requires shell access. SSH-free pairing is not complete.
-- No OAuth client ID has been provisioned, and no authorization has been performed.
+- A pairing button is implemented in **Device** settings, but has not been validated on the device. The **video checkbox is still not implemented**; route selection remains via CLI.
+- No OAuth client ID has been provisioned, and no authorization has been performed. Creating the Google Cloud OAuth client and supplying its ID is a necessary external configuration step, not something this branch can do by itself.
 - Automatic uploads run only while offroad with Wi-Fi. In-progress transfers
   may continue briefly while the process is being stopped by manager.
 - The API transfer implementation and the tests have not been validated on comma 3X.
