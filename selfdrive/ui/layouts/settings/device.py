@@ -1,5 +1,7 @@
 import os
 import math
+import threading
+from pathlib import Path
 
 from cereal import messaging, log
 from openpilot.common.basedir import BASEDIR
@@ -35,6 +37,9 @@ class DeviceLayout(Widget):
     self._select_language_dialog: MultiOptionDialog | None = None
     self._fcc_dialog: HtmlModal | None = None
     self._training_guide: TrainingGuide | None = None
+    self._drive_pairing = False
+    self._drive_pair_status = 'Not connected'
+    self._drive_pair_lock = threading.Lock()
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -60,6 +65,8 @@ class DeviceLayout(Widget):
       button_item(lambda: tr("Driver Camera"), lambda: tr("PREVIEW"), lambda: tr(DESCRIPTIONS['driver_camera']),
                   callback=lambda: gui_app.push_widget(DriverCameraDialog()), enabled=ui_state.is_offroad),
       self._reset_calib_btn,
+      button_item(lambda: tr('Google Drive'), lambda: tr('CONNECT'),
+                  lambda: self._drive_pair_status, callback=self._start_drive_pairing, enabled=ui_state.is_offroad),
       button_item(lambda: tr("Review Training Guide"), lambda: tr("REVIEW"), lambda: tr(DESCRIPTIONS['review_guide']),
                   self._on_review_training_guide, enabled=ui_state.is_offroad),
       button_item(lambda: tr("Regulatory"), lambda: tr("VIEW"), callback=self._on_regulatory, enabled=ui_state.is_offroad),
@@ -67,6 +74,27 @@ class DeviceLayout(Widget):
       self._power_off_btn,
     ]
     return items
+
+  def _start_drive_pairing(self):
+    if not ui_state.is_offroad() or self._drive_pairing:
+      return
+    self._drive_pairing = True
+    self._drive_pair_status = "Connecting to Google..."
+    threading.Thread(target=self._drive_pair_worker, daemon=True).start()
+
+  def _drive_pair_worker(self):
+    try:
+      from openpilot.system.loggerd.drive_oauth import begin_pairing, finish_pairing, TOKEN_FILE
+      if TOKEN_FILE.is_file():
+        self._drive_pair_status = "Already authorized. Reconnect to replace existing token."
+      info = begin_pairing()
+      self._drive_pair_status = f"Open {info['verification_url']} on your phone. Code: {info['user_code']}"
+      finish_pairing(info, on_code=lambda _: None)
+      self._drive_pair_status = "Google Drive connected; uploads enabled when offroad on Wi-Fi."
+    except Exception as exc:
+      self._drive_pair_status = f"Drive authorization failed: {exc}"
+    finally:
+      self._drive_pairing = False
 
   def _offroad_transition(self):
     self._power_off_btn.action_item.right_button.set_visible(ui_state.is_offroad())
