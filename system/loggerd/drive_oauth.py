@@ -13,6 +13,7 @@ from urllib import parse, request, error
 
 ROOT = Path("/data/drive_upload")
 CLIENT_FILE = ROOT / "client_id"
+CLIENT_SECRET_FILE = ROOT / "client_secret"
 TOKEN_FILE = ROOT / "google_token.json"
 DEVICE_ENDPOINT = "https://oauth2.googleapis.com/device/code"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -37,6 +38,13 @@ def client_id():
   value = CLIENT_FILE.read_text().strip()
   if not value:
     raise RuntimeError("Empty Google OAuth client ID")
+  return value
+
+
+def client_secret():
+  value = CLIENT_SECRET_FILE.read_text().strip()
+  if not value:
+    raise RuntimeError("Empty Google OAuth client secret")
   return value
 
 
@@ -69,6 +77,7 @@ def finish_pairing(info, on_code=print):
   while time.monotonic() < deadline:
     time.sleep(interval)
     result = post_form(TOKEN_ENDPOINT, {"client_id": client_id(),
+                       "client_secret": client_secret(),
                        "device_code": info["device_code"],
                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code"})
     if "access_token" in result:
@@ -86,7 +95,8 @@ def access_token():
   data = json.loads(TOKEN_FILE.read_text())
   if data.get("access_token") and data.get("expires_at", 0) > time.time():
     return data["access_token"]
-  result = post_form(TOKEN_ENDPOINT, {"client_id": client_id(), "refresh_token": data["refresh_token"],
+  result = post_form(TOKEN_ENDPOINT, {"client_id": client_id(), "client_secret": client_secret(),
+                     "refresh_token": data["refresh_token"],
                      "grant_type": "refresh_token"})
   if "access_token" not in result:
     raise RuntimeError(f"Token refresh failed: {result.get('error', 'unknown')}")
