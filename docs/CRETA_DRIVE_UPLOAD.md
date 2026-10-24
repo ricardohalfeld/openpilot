@@ -32,7 +32,7 @@ Pass the route ID without its trailing segment number.
 ## Known limitations / safety
 - **UI checkbox is not implemented yet.**
 - **This does not modify the existing deleter.** Under storage pressure, openpilot may delete logs before they have uploaded. Do not rely on this branch as a lossless archival system yet.
-- Upload is attempted only offroad; it does not explicitly check whether the transport is Wi-Fi, and therefore could use another available internet connection.
+- Uploads are attempted only when the hardware network type reports Wi-Fi; this is not a guarantee of which physical uplink a VPN or tethering configuration ultimately uses.
 - The initial rclone binary and OAuth configuration must be installed manually.
 - `rclone copyto` is retried after interruption. The ledger avoids repeat transfers of unchanged local files after confirmed success.
 - Untested on physical comma 3X. Validate resource usage and manager integration before daily driving.
