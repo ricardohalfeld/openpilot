@@ -15,8 +15,7 @@ https://developers.google.com/identity/protocols/oauth2/limited-input-device
 A Google Cloud project must have Google Drive API enabled and an OAuth client
 of type **TVs and Limited Input devices**. The project's OAuth consent screen
 must be configured for the intended Google account and publishing/testing rules.
-Put ONLY the OAuth **client ID** into `/data/drive_upload/client_id`. The client
-ID is public, not your Google password. Do not commit tokens or credentials.
+Provision the OAuth **client ID** in `/data/drive_upload/client_id` and the\nOAuth **client secret** in `/data/drive_upload/client_secret` (mode 0600).\nNeither is your Google password. Never commit the secret or tokens.
 Protect `/data/drive_upload/google_token.json` (mode 0600).
 
 ## Pairing on the comma screen
@@ -44,7 +43,7 @@ python3 -m openpilot.system.loggerd.drive_upload video 'ROUTE-ID' off
 
 ## Limitations and safety
 - A pairing button is implemented in **Device** settings, but has not been validated on the device. The **video checkbox is still not implemented**; route selection remains via CLI.
-- No OAuth client ID has been provisioned, and no authorization has been performed. Creating the Google Cloud OAuth client and supplying its ID is a necessary external configuration step, not something this branch can do by itself.
+- No OAuth client credentials have been provisioned, and no authorization has been performed. Creating the Google Cloud OAuth client and supplying its ID is a necessary external configuration step, not something this branch can do by itself.
 - Automatic uploads run only while offroad with Wi-Fi. In-progress transfers
   may continue briefly while the process is being stopped by manager.
 - The API transfer implementation and the tests have not been validated on comma 3X.
