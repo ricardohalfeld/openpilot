@@ -31,8 +31,8 @@ Pass the route ID without its trailing segment number.
 
 ## Known limitations / safety
 - **UI checkbox is not implemented yet.**
-- **This does not modify the existing deleter.** Under storage pressure, openpilot may delete logs before they have uploaded. Do not rely on this branch as a lossless archival system yet.
+- The deleter prefers segments already uploaded; under storage pressure it can still delete pending logs to keep enough free space. This is not a lossless archive.
 - Uploads are attempted only when the hardware network type reports Wi-Fi; this is not a guarantee of which physical uplink a VPN or tethering configuration ultimately uses.
 - The initial rclone binary and OAuth configuration must be installed manually.
 - `rclone copyto` is retried after interruption. The ledger avoids repeat transfers of unchanged local files after confirmed success.
-- Untested on physical comma 3X. Validate resource usage and manager integration before daily driving.
+- Three regression tests are provided in `system/loggerd/test_drive_upload.py`; they have not yet been executed in the target openpilot runtime.\n- Untested on physical comma 3X. Validate resource usage and manager integration before daily driving.
