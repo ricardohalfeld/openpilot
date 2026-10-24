@@ -58,6 +58,9 @@ class DeviceLayout(Widget):
     self._power_off_btn = dual_button_item(lambda: tr("Reboot"), lambda: tr("Power Off"),
                                            left_callback=self._reboot_prompt, right_callback=self._power_off_prompt)
 
+    self._drive_pair_btn = button_item(lambda: tr('Google Drive'), lambda: tr('CONNECT'),
+                                       callback=self._start_drive_pairing, enabled=ui_state.is_offroad)
+
     items = [
       text_item(lambda: tr("Dongle ID"), self._params.get("DongleId") or (lambda: tr("N/A"))),
       text_item(lambda: tr("Serial"), self._params.get("HardwareSerial") or (lambda: tr("N/A"))),
@@ -65,8 +68,7 @@ class DeviceLayout(Widget):
       button_item(lambda: tr("Driver Camera"), lambda: tr("PREVIEW"), lambda: tr(DESCRIPTIONS['driver_camera']),
                   callback=lambda: gui_app.push_widget(DriverCameraDialog()), enabled=ui_state.is_offroad),
       self._reset_calib_btn,
-      button_item(lambda: tr('Google Drive'), lambda: tr('CONNECT'),
-                  lambda: self._drive_pair_status, callback=self._start_drive_pairing, enabled=ui_state.is_offroad),
+      self._drive_pair_btn,
       button_item(lambda: tr("Review Training Guide"), lambda: tr("REVIEW"), lambda: tr(DESCRIPTIONS['review_guide']),
                   self._on_review_training_guide, enabled=ui_state.is_offroad),
       button_item(lambda: tr("Regulatory"), lambda: tr("VIEW"), callback=self._on_regulatory, enabled=ui_state.is_offroad),
@@ -104,6 +106,7 @@ class DeviceLayout(Widget):
     self._scroller.show_event()
 
   def _render(self, rect):
+    self._drive_pair_btn.action_item.set_value(self._drive_pair_status)
     self._scroller.render(rect)
 
   def _show_language_dialog(self):
