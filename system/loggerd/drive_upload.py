@@ -136,7 +136,7 @@ def main():
   commands.add_parser("once")
   args = parser.parse_args()
   if args.command == "video":
-    if "/" in args.route or "\\\\" in args.route or ".." in args.route or not args.route:
+    if "/" in args.route or chr(92) in args.route or ".." in args.route or not args.route:
       parser.error("Provide a route ID, not a segment or path")
     set_video_route(args.route, args.action == "on")
     return
