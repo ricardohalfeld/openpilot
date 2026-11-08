@@ -1,5 +1,6 @@
 import json
 import math
+import time
 import pyray as rl
 from functools import partial
 from dataclasses import dataclass
@@ -104,6 +105,9 @@ class HudRenderer(Widget):
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
     self._show_tune_controls = False
+    # Rendering-only EMA state. Never feed these values back into control or Params.
+    self._display_filter_values: dict[str, float] = {}
+    self._display_filter_time: float | None = None
 
     self._tune_buttons: dict[tuple[str, int], Button] = {}
     for key in TUNE_STEP:
@@ -353,24 +357,53 @@ class HudRenderer(Widget):
                       rl.Vector2(x + col * width / 4, y + 326 + row * 45),
                       FONT_SIZES.small, 0, COLORS.WHITE_TRANSLUCENT)
 
+  def _filter_display_signals(self, signals: dict[str, float]) -> dict[str, float]:
+    # Time-based exponential smoothing, independent of rendering frame rate.
+    # This is exclusively for telemetry rendering; the steering controller stays untouched.
+    now = time.monotonic()
+    dt = 0.0 if self._display_filter_time is None else max(0.0, now - self._display_filter_time)
+    self._display_filter_time = now
+    if dt > 1.0:  # Don't animate stale data after the UI has been paused.
+      self._display_filter_values.clear()
+    tau = 0.35  # seconds; 63% response in 350 ms
+    alpha = 1.0 - math.exp(-min(dt, 1.0) / tau) if dt > 0.0 else 1.0
+    for key, raw in signals.items():
+      if not math.isfinite(raw):
+        continue
+      previous = self._display_filter_values.get(key)
+      self._display_filter_values[key] = raw if previous is None else previous + alpha * (raw - previous)
+    return {key: self._display_filter_values.get(key, raw) for key, raw in signals.items()}
+
   def _draw_command_composition(self, x: float, y: float, width: float, height: float,
                                 values: dict[str, float]) -> None:
     sm = ui_state.sm
     lateral_state = sm['controlsState'].lateralControlState
     if lateral_state.which() != "torqueState":
+      self._display_filter_values.clear()
+      self._display_filter_time = None
       rl.draw_text_ex(self._font_medium, "Waiting for torqueState", rl.Vector2(x, y),
                       FONT_SIZES.section, 0, COLORS.MUTED)
       return
 
     torque_state = lateral_state.torqueState
+    # Smooth the individual contributions (not their sum), so the displayed
+    # total remains the exact sum of the displayed P/I/D/FF components.
+    raw_signals = {
+      "P": float(torque_state.p),
+      "I": float(torque_state.i),
+      "D": float(torque_state.d),
+      "FF": float(torque_state.f),
+      "torque_op": float(sm['carControl'].actuators.torque),
+    }
+    display = self._filter_display_signals(raw_signals)
     components = [
-      ("P", float(torque_state.p), COLORS.BAR_P),
-      ("I", float(torque_state.i), COLORS.BAR_I),
-      ("D", float(torque_state.d), COLORS.BAR_D),
-      ("FF", float(torque_state.f), COLORS.BAR_F),
+      ("P", display["P"], COLORS.BAR_P),
+      ("I", display["I"], COLORS.BAR_I),
+      ("D", display["D"], COLORS.BAR_D),
+      ("FF", display["FF"], COLORS.BAR_F),
     ]
     lat_total = sum(value for _, value, _ in components)
-    torque_op = float(sm['carControl'].actuators.torque)
+    torque_op = display["torque_op"]
     torque_model = -torque_op
 
     rl.draw_text_ex(self._font_medium, "PID + FF  |  lateral acceleration (m/s²)", rl.Vector2(x, y),
