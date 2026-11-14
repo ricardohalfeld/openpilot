@@ -305,23 +305,66 @@ class HudRenderer(Widget):
       cursor_x += 165
 
   def _draw_steering_wheel(self, x: float, y: float, radius: float) -> None:
-    # carState.steeringAngleDeg is the actual steering-wheel angle, not the road-wheel angle.
+    # Hyundai Creta-inspired wheel rendered entirely in the HUD. Only visual telemetry.
+    # steeringAngleDeg is the actual steering-wheel rotation (not tire steering angle).
     angle_deg = float(ui_state.sm['carState'].steeringAngleDeg)
     angle = math.radians(-angle_deg)
     cx, cy = int(x), int(y)
-    outer = int(radius)
-    rl.draw_circle_lines(cx, cy, outer, COLORS.WHITE_TRANSLUCENT)
-    rl.draw_circle_lines(cx, cy, int(radius * 0.80), COLORS.MUTED)
+    r = float(radius)
+    leather = rl.Color(33, 34, 36, 255)
+    leather_edge = rl.Color(75, 76, 79, 255)
+    silver = rl.Color(163, 169, 175, 255)
+    silver_edge = rl.Color(210, 213, 216, 255)
+    spoke_black = rl.Color(47, 48, 52, 255)
+    hub = rl.Color(39, 40, 44, 255)
 
-    def point(theta: float, distance: float) -> rl.Vector2:
-      return rl.Vector2(cx + math.cos(theta) * distance, cy + math.sin(theta) * distance)
+    def pt(px: float, py: float) -> rl.Vector2:
+      # Coordinates are relative to the wheel center in units of its radius.
+      px, py = px * r, py * r
+      return rl.Vector2(cx + math.cos(angle) * px - math.sin(angle) * py,
+                        cy + math.sin(angle) * px + math.cos(angle) * py)
 
-    # Three-spoke steering wheel; the spoke layout rotates with the reported steering angle.
-    for spoke in (math.pi / 2, 7 * math.pi / 6, 11 * math.pi / 6):
-      theta = spoke + angle
-      rl.draw_line_ex(point(theta, radius * 0.17), point(theta, radius * 0.83), 9.0, COLORS.WHITE)
-    rl.draw_circle(cx, cy, radius * 0.21, COLORS.CARD_BG)
-    rl.draw_circle_lines(cx, cy, radius * 0.21, COLORS.WHITE)
+    def polygon(vertices: list[tuple[float, float]], color: rl.Color) -> None:
+      # Triangle fan to keep the drawing compatible with pyray/raylib.
+      center = pt(*vertices[0])
+      for idx in range(1, len(vertices) - 1):
+        rl.draw_triangle(center, pt(*vertices[idx]), pt(*vertices[idx + 1]), color)
+
+    # Thick padded rim; draw the opening over its center before adding the spokes.
+    rl.draw_circle(cx, cy, r, leather_edge)
+    rl.draw_circle(cx, cy, r * 0.966, leather)
+    rl.draw_circle(cx, cy, r * 0.800, COLORS.PANEL_BG)
+    rl.draw_circle_lines(cx, cy, r * 0.805, leather_edge)
+
+    # Silver lower Y-spokes, shaped like the two swept metal pieces in the reference photo.
+    polygon([(-0.39, 0.18), (-0.72, 0.60), (-0.57, 0.80), (-0.18, 0.45)], silver)
+    polygon([(0.39, 0.18), (0.72, 0.60), (0.57, 0.80), (0.18, 0.45)], silver)
+    polygon([(-0.34, 0.23), (-0.65, 0.63), (-0.54, 0.70), (-0.15, 0.39)], silver_edge)
+    polygon([(0.34, 0.23), (0.65, 0.63), (0.54, 0.70), (0.15, 0.39)], silver_edge)
+
+    # Horizontal black multifunction-button housings.
+    polygon([(-0.83, -0.29), (-0.38, -0.34), (-0.32, 0.20), (-0.79, 0.16)], spoke_black)
+    polygon([(0.83, -0.29), (0.38, -0.34), (0.32, 0.20), (0.79, 0.16)], spoke_black)
+    for side in (-1, 1):
+      for py in (-0.19, -0.04, 0.10):
+        rl.draw_line_ex(pt(side * 0.48, py), pt(side * 0.69, py), max(1.0, r * 0.012), silver)
+
+    # Soft rounded center boss with a prominent elliptical Hyundai emblem.
+    rl.draw_circle(cx, cy, r * 0.45, leather_edge)
+    rl.draw_circle(cx, cy, r * 0.428, hub)
+    rl.draw_circle_lines(cx, cy, r * 0.425, leather)
+    # Rotated oval and stylized slanted H (drawn in wheel-local coordinates).
+    ellipse_points = []
+    for i in range(33):
+      theta = 2 * math.pi * i / 32
+      ellipse_points.append(pt(0.29 * math.cos(theta), 0.15 * math.sin(theta)))
+    for p0, p1 in zip(ellipse_points, ellipse_points[1:]):
+      rl.draw_line_ex(p0, p1, max(2.0, r * 0.028), silver_edge)
+    emblem_width = max(2.0, r * 0.032)
+    rl.draw_line_ex(pt(-0.14, -0.12), pt(-0.09, 0.12), emblem_width, silver_edge)
+    rl.draw_line_ex(pt(0.09, -0.12), pt(0.14, 0.12), emblem_width, silver_edge)
+    rl.draw_line_ex(pt(-0.11, 0.035), pt(0.11, -0.035), emblem_width, silver_edge)
+
     rl.draw_text_ex(self._font_medium, "STEERING WHEEL", rl.Vector2(cx - radius, cy + radius + 12),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
     rl.draw_text_ex(self._font_bold, f"{angle_deg:+.1f} deg", rl.Vector2(cx - radius, cy + radius + 50),
