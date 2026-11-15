@@ -336,15 +336,18 @@ class HudRenderer(Widget):
     rl.draw_circle(cx, cy, r * 0.800, COLORS.PANEL_BG)
     rl.draw_circle_lines(cx, cy, r * 0.805, leather_edge)
 
-    # Silver lower Y-spokes, shaped like the two swept metal pieces in the reference photo.
-    polygon([(-0.39, 0.18), (-0.72, 0.60), (-0.57, 0.80), (-0.18, 0.45)], silver)
-    polygon([(0.39, 0.18), (0.72, 0.60), (0.57, 0.80), (0.18, 0.45)], silver)
-    polygon([(-0.34, 0.23), (-0.65, 0.63), (-0.54, 0.70), (-0.15, 0.39)], silver_edge)
-    polygon([(0.34, 0.23), (0.65, 0.63), (0.54, 0.70), (0.15, 0.39)], silver_edge)
+    def mirrored_polygon(left_vertices: list[tuple[float, float]], color: rl.Color) -> None:
+      # Reflect all local X coordinates for exact vertical symmetry.
+      # Reverse the mirrored winding so both halves render with the same triangle facing.
+      polygon(left_vertices, color)
+      polygon([(-px, py) for px, py in reversed(left_vertices)], color)
 
-    # Horizontal black multifunction-button housings.
-    polygon([(-0.83, -0.29), (-0.38, -0.34), (-0.32, 0.20), (-0.79, 0.16)], spoke_black)
-    polygon([(0.83, -0.29), (0.38, -0.34), (0.32, 0.20), (0.79, 0.16)], spoke_black)
+    # Both lower silver Y-spokes are generated from precisely the same geometry.
+    mirrored_polygon([(-0.39, 0.18), (-0.72, 0.60), (-0.57, 0.80), (-0.18, 0.45)], silver)
+    mirrored_polygon([(-0.34, 0.23), (-0.65, 0.63), (-0.54, 0.70), (-0.15, 0.39)], silver_edge)
+
+    # Symmetric horizontal black multifunction-button housings.
+    mirrored_polygon([(-0.83, -0.29), (-0.38, -0.34), (-0.32, 0.20), (-0.79, 0.16)], spoke_black)
     for side in (-1, 1):
       for py in (-0.19, -0.04, 0.10):
         rl.draw_line_ex(pt(side * 0.48, py), pt(side * 0.69, py), max(1.0, r * 0.012), silver)
@@ -353,7 +356,7 @@ class HudRenderer(Widget):
     rl.draw_circle(cx, cy, r * 0.45, leather_edge)
     rl.draw_circle(cx, cy, r * 0.428, hub)
     rl.draw_circle_lines(cx, cy, r * 0.425, leather)
-    # Rotated oval and stylized slanted H (drawn in wheel-local coordinates).
+    # Centered oval and mirror-symmetric stylized H (wheel-local coordinates).
     ellipse_points = []
     for i in range(33):
       theta = 2 * math.pi * i / 32
@@ -362,8 +365,8 @@ class HudRenderer(Widget):
       rl.draw_line_ex(p0, p1, max(2.0, r * 0.028), silver_edge)
     emblem_width = max(2.0, r * 0.032)
     rl.draw_line_ex(pt(-0.14, -0.12), pt(-0.09, 0.12), emblem_width, silver_edge)
-    rl.draw_line_ex(pt(0.09, -0.12), pt(0.14, 0.12), emblem_width, silver_edge)
-    rl.draw_line_ex(pt(-0.11, 0.035), pt(0.11, -0.035), emblem_width, silver_edge)
+    rl.draw_line_ex(pt(0.14, -0.12), pt(0.09, 0.12), emblem_width, silver_edge)
+    rl.draw_line_ex(pt(-0.12, 0.0), pt(0.12, 0.0), emblem_width, silver_edge)
 
     rl.draw_text_ex(self._font_medium, "STEERING WHEEL", rl.Vector2(cx - radius, cy + radius + 12),
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
