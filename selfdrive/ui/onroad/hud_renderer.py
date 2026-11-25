@@ -1,180 +1,553 @@
+import json
+import math
+import time
 import pyray as rl
+from functools import partial
 from dataclasses import dataclass
-from openpilot.common.constants import CV
-from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
-from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
+from openpilot.selfdrive.controls.lib.latcontrol_torque import (
+  INTERP_SPEEDS as LAT_TORQUE_INTERP_SPEEDS,
+  KD as LAT_TORQUE_KD,
+  KI as LAT_TORQUE_KI,
+  KP_INTERP as LAT_TORQUE_KP_INTERP,
+)
+from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
-from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets.button import Button, ButtonStyle
 from openpilot.system.ui.widgets import Widget
 
-# Constants
-SET_SPEED_NA = 255
-KM_TO_MILE = 0.621371
-CRUISE_DISABLED_CHAR = '–'
-
-
-@dataclass(frozen=True)
-class UIConfig:
-  header_height: int = 300
-  border_size: int = 30
-  button_size: int = 192
-  set_speed_width_metric: int = 200
-  set_speed_width_imperial: int = 172
-  set_speed_height: int = 204
-  wheel_icon_size: int = 144
+TORQUE_TUNE_OVERRIDE_PARAM = "TorqueTuneOverride"
+TUNE_STEP = {
+  "latAccelFactor": 0.05,
+  "friction": 0.01,
+  "maxLatAccel": 0.10,
+  "kpScale": 0.05,
+  "kiScale": 0.05,
+  "kdGain": 0.01,
+  "ffScale": 0.05,
+}
+TUNE_LIMITS = {
+  "latAccelFactor": (1.5, 3.5),
+  "friction": (0.0, 0.25),
+  "maxLatAccel": (1.5, 3.5),
+  "kpScale": (0.0, 2.0),
+  "kiScale": (0.0, 2.0),
+  "kdGain": (0.0, 1.0),
+  "ffScale": (0.0, 2.0),
+}
 
 
 @dataclass(frozen=True)
 class FontSizes:
-  current_speed: int = 176
-  speed_unit: int = 66
-  max_speed: int = 40
-  set_speed: int = 90
+  title: int = 68
+  subtitle: int = 30
+  section: int = 28
+  row_label: int = 38
+  row_value: int = 48
+  small: int = 26
+  tiny: int = 22
 
 
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
-  DISENGAGED = rl.Color(145, 155, 149, 255)
-  OVERRIDE = rl.Color(145, 155, 149, 255)  # Added
-  ENGAGED = rl.Color(128, 216, 166, 255)
-  DISENGAGED_BG = rl.Color(0, 0, 0, 153)
-  OVERRIDE_BG = rl.Color(145, 155, 149, 204)
-  ENGAGED_BG = rl.Color(128, 216, 166, 204)
-  GREY = rl.Color(166, 166, 166, 255)
-  DARK_GREY = rl.Color(114, 114, 114, 255)
-  BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
-  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
-  BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
-  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 114)
-  HEADER_GRADIENT_END = rl.BLANK
+  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 210)
+  MUTED = rl.Color(185, 185, 185, 255)
+  PANEL_BG = rl.Color(0, 0, 0, 225)
+  OVERLAY_BG = rl.Color(0, 0, 0, 238)
+  CARD_BG = rl.Color(25, 25, 25, 230)
+  BORDER = rl.Color(255, 255, 255, 75)
+  BAR_BG = rl.Color(16, 16, 16, 255)
+  BAR_ZERO = rl.Color(255, 255, 255, 220)
+  BAR_MARKER = rl.Color(255, 255, 255, 255)
+  BAR_P = rl.Color(80, 180, 255, 255)
+  BAR_I = rl.Color(255, 190, 70, 255)
+  BAR_D = rl.Color(190, 120, 255, 255)
+  BAR_F = rl.Color(90, 230, 120, 255)
+  BAR_CMD = rl.Color(255, 95, 95, 255)
 
 
-UI_CONFIG = UIConfig()
 FONT_SIZES = FontSizes()
 COLORS = Colors()
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+  return min(max(value, lo), hi)
+
+
+def _loads_param_json(raw):
+  if raw is None:
+    return None
+  if isinstance(raw, dict):
+    return raw
+  if isinstance(raw, bytes):
+    raw = raw.decode("utf-8")
+  if isinstance(raw, str):
+    return json.loads(raw)
+  return None
+
+
+def _interp(x: float, xp: list[float], fp: list[float]) -> float:
+  if x <= xp[0]:
+    return fp[0]
+  if x >= xp[-1]:
+    return fp[-1]
+  for i in range(1, len(xp)):
+    if x < xp[i]:
+      t = (x - xp[i - 1]) / (xp[i] - xp[i - 1])
+      return fp[i - 1] + t * (fp[i] - fp[i - 1])
+  return fp[-1]
 
 
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
-    """Initialize the HUD renderer."""
-    self.is_cruise_set: bool = False
-    self.is_cruise_available: bool = True
-    self.set_speed: float = SET_SPEED_NA
-    self.speed: float = 0.0
-    self.v_ego_cluster_seen: bool = False
-
-    self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+    self._show_tune_controls = False
+    # Rendering-only EMA state. Never feed these values back into control or Params.
+    self._display_filter_values: dict[str, float] = {}
+    self._display_filter_time: float | None = None
 
-    self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
+    self._tune_buttons: dict[tuple[str, int], Button] = {}
+    for key in TUNE_STEP:
+      for direction, text in ((-1, "-"), (1, "+")):
+        self._tune_buttons[(key, direction)] = self._child(Button(text, partial(self._adjust_tune, key, direction),
+                                                                  font_size=50,
+                                                                  button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER,
+                                                                  border_radius=10))
+    self._edit_button = self._child(Button("EDIT", self._toggle_tune_controls, font_size=30,
+                                           button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
+    self._plot_button = self._child(Button("PLOT", self._toggle_tune_controls, font_size=30,
+                                           button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
+    self._tune_reset_button = self._child(Button("RST", self._reset_tune, font_size=30,
+                                                 button_style=ButtonStyle.TRANSPARENT_WHITE_BORDER, border_radius=10))
 
   def _update_state(self) -> None:
-    """Update HUD state based on car state and controls state."""
-    sm = ui_state.sm
-    if sm.recv_frame["carState"] < ui_state.started_frame:
-      self.is_cruise_set = False
-      self.set_speed = SET_SPEED_NA
-      self.speed = 0.0
-      return
-
-    controls_state = sm['controlsState']
-    car_state = sm['carState']
-
-    v_cruise_cluster = car_state.vCruiseCluster
-    self.set_speed = (
-      controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster
-    )
-    self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
-    self.is_cruise_available = self.set_speed != -1
-
-    if self.is_cruise_set and not ui_state.is_metric:
-      self.set_speed *= KM_TO_MILE
-
-    v_ego_cluster = car_state.vEgoCluster
-    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
-    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
-    speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    self.speed = max(0.0, v_ego * speed_conversion)
+    pass
 
   def _render(self, rect: rl.Rectangle) -> None:
-    """Render HUD elements to the screen."""
-    # Draw the header background
-    rl.draw_rectangle_gradient_v(
-      int(rect.x),
-      int(rect.y),
-      int(rect.width),
-      UI_CONFIG.header_height,
-      COLORS.HEADER_GRADIENT_START,
-      COLORS.HEADER_GRADIENT_END,
-    )
+    values = self._tune_values()
+    if values is None:
+      return
 
-    if self.is_cruise_available:
-      self._draw_set_speed(rect)
-
-    self._draw_current_speed(rect)
-
-    button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
-    button_y = rect.y + UI_CONFIG.border_size
-    self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+    rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), int(rect.height), COLORS.PANEL_BG)
+    self._draw_torque_tune_panel(rect, values)
 
   def user_interacting(self) -> bool:
-    return self._exp_button.is_pressed
+    # The fullscreen tuner owns the onroad screen. Do not let touches fall through to the main layout.
+    return True
 
-  def _draw_set_speed(self, rect: rl.Rectangle) -> None:
-    """Draw the MAX speed indicator box."""
-    set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
-    x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
-    y = rect.y + 45
+  def _toggle_tune_controls(self) -> None:
+    self._show_tune_controls = not self._show_tune_controls
 
-    set_speed_rect = rl.Rectangle(x, y, set_speed_width, UI_CONFIG.set_speed_height)
-    rl.draw_rectangle_rounded(set_speed_rect, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
-    rl.draw_rectangle_rounded_lines_ex(set_speed_rect, 0.35, 10, 6, COLORS.BORDER_TRANSLUCENT)
+  def _default_tune_values(self) -> dict[str, float] | None:
+    if ui_state.CP is None or ui_state.CP.lateralTuning.which() != "torque":
+      return None
 
-    max_color = COLORS.GREY
-    set_speed_color = COLORS.DARK_GREY
-    if self.is_cruise_set:
-      set_speed_color = COLORS.WHITE
-      if ui_state.status == UIStatus.ENGAGED:
-        max_color = COLORS.ENGAGED
-      elif ui_state.status == UIStatus.DISENGAGED:
-        max_color = COLORS.DISENGAGED
-      elif ui_state.status == UIStatus.OVERRIDE:
-        max_color = COLORS.OVERRIDE
+    torque = ui_state.CP.lateralTuning.torque
+    return {
+      "latAccelFactor": float(torque.latAccelFactor),
+      "friction": float(torque.friction),
+      "maxLatAccel": float(ui_state.CP.maxLateralAccel),
+      "kpScale": 1.0,
+      "kiScale": 1.0,
+      "kdGain": LAT_TORQUE_KD,
+      "ffScale": 1.0,
+    }
 
-    max_text = tr("MAX")
-    max_text_width = measure_text_cached(self._font_semi_bold, max_text, FONT_SIZES.max_speed).x
-    rl.draw_text_ex(
-      self._font_semi_bold,
-      max_text,
-      rl.Vector2(x + (set_speed_width - max_text_width) / 2, y + 27),
-      FONT_SIZES.max_speed,
-      0,
-      max_color,
+  def _tune_values(self) -> dict[str, float] | None:
+    values = self._default_tune_values()
+    if values is None:
+      return None
+
+    try:
+      override = _loads_param_json(ui_state.params.get(TORQUE_TUNE_OVERRIDE_PARAM))
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+      override = None
+
+    if isinstance(override, dict) and override.get("enabled", False):
+      for key in values:
+        if key in override:
+          try:
+            values[key] = float(override[key])
+          except (TypeError, ValueError):
+            pass
+    return values
+
+  def _write_tune_values(self, values: dict[str, float]) -> None:
+    # TorqueTuneOverride is registered as JSON. Params.put_nonblocking expects a Python dict/list for JSON,
+    # not a pre-serialized JSON string.
+    ui_state.params.put_nonblocking(TORQUE_TUNE_OVERRIDE_PARAM, {
+      "enabled": True,
+      "latAccelFactor": round(values["latAccelFactor"], 3),
+      "friction": round(values["friction"], 3),
+      "maxLatAccel": round(values["maxLatAccel"], 3),
+      "kpScale": round(values["kpScale"], 3),
+      "kiScale": round(values["kiScale"], 3),
+      "kdGain": round(values["kdGain"], 3),
+      "ffScale": round(values["ffScale"], 3),
+    })
+
+  def _adjust_tune(self, key: str, direction: int) -> None:
+    values = self._tune_values()
+    if values is None:
+      return
+
+    lo, hi = TUNE_LIMITS[key]
+    values[key] = _clamp(values[key] + direction * TUNE_STEP[key], lo, hi)
+    self._write_tune_values(values)
+
+  def _reset_tune(self) -> None:
+    ui_state.params.remove(TORQUE_TUNE_OVERRIDE_PARAM)
+
+  def _draw_text_right(self, text: str, x: float, y: float, font_size: int, color: rl.Color = COLORS.WHITE) -> None:
+    text_size = measure_text_cached(self._font_medium, text, font_size)
+    rl.draw_text_ex(self._font_medium, text, rl.Vector2(x - text_size.x, y), font_size, 0, color)
+
+  def _draw_tune_row(self, x: float, y: float, width: float, label: str, key: str, value: float, help_text: str) -> None:
+    row_h = 76
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, row_h), 0.12, 8, COLORS.CARD_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, row_h), 0.12, 8, 2, COLORS.BORDER)
+
+    rl.draw_text_ex(self._font_medium, label, rl.Vector2(x + 20, y + 12), FONT_SIZES.row_label, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, help_text, rl.Vector2(x + 20, y + 50), FONT_SIZES.tiny, 0, COLORS.MUTED)
+
+    value_text = f"{value:.2f}"
+    value_size = measure_text_cached(self._font_bold, value_text, FONT_SIZES.row_value)
+    value_x = x + width - 250 - value_size.x / 2
+    rl.draw_text_ex(self._font_bold, value_text, rl.Vector2(value_x, y + 10), FONT_SIZES.row_value, 0, COLORS.WHITE)
+
+    self._tune_buttons[(key, -1)].render(rl.Rectangle(x + width - 178, y + 6, 72, 64))
+    self._tune_buttons[(key, 1)].render(rl.Rectangle(x + width - 88, y + 6, 72, 64))
+
+  def _component_scale(self, values: list[tuple[str, float, rl.Color]], total: float) -> float:
+    pos_sum = sum(max(value, 0.0) for _, value, _ in values)
+    neg_sum = abs(sum(min(value, 0.0) for _, value, _ in values))
+    return max(0.25, abs(total), pos_sum, neg_sum)
+
+  def _value_to_x(self, center_x: int, half_width: int, value: float, scale: float) -> int:
+    return int(center_x + _clamp(value / scale, -1.0, 1.0) * half_width)
+
+  def _draw_component_segment(self, x0: int, x1: int, y: float, height: float, color: rl.Color) -> None:
+    left = min(x0, x1)
+    width = abs(x1 - x0)
+    if width > 0:
+      rl.draw_rectangle(left, int(y + 4), width, int(height - 8), color)
+
+  def _draw_signed_component_bar(self, x: float, y: float, width: float, values: list[tuple[str, float, rl.Color]], total: float) -> None:
+    center_x = int(x + width / 2)
+    half_width = int(width / 2 - 10)
+    scale = self._component_scale(values, total)
+    main_h = 108
+    oppose_h = 38
+    oppose_y = y + main_h + 16
+    total_sign = 1.0 if total >= 0.0 else -1.0
+
+    aligned = [(label, value, color) for label, value, color in values if value * total_sign >= 0.0]
+    opposing = [(label, value, color) for label, value, color in values if value * total_sign < 0.0]
+    oppose_sum = sum(value for _, value, _ in opposing)
+
+    main_rect = rl.Rectangle(x, y, width, main_h)
+    oppose_rect = rl.Rectangle(x, oppose_y, width, oppose_h)
+    rl.draw_rectangle_rounded(main_rect, 0.14, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(main_rect, 0.14, 8, 2, COLORS.BORDER)
+    rl.draw_rectangle_rounded(oppose_rect, 0.18, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(oppose_rect, 0.18, 8, 2, COLORS.BORDER)
+    rl.draw_line(center_x, int(y - 7), center_x, int(oppose_y + oppose_h + 7), COLORS.BAR_ZERO)
+
+    # Thin lower bar: components opposing the final controller output, stacked away from zero.
+    running = 0.0
+    for _, value, color in opposing:
+      next_running = running + value
+      self._draw_component_segment(self._value_to_x(center_x, half_width, running, scale),
+                                   self._value_to_x(center_x, half_width, next_running, scale),
+                                   oppose_y, oppose_h, color)
+      running = next_running
+
+    # Thick upper bar: components that agree with the final output, starting at the opposition endpoint.
+    running = oppose_sum
+    for _, value, color in aligned:
+      next_running = running + value
+      self._draw_component_segment(self._value_to_x(center_x, half_width, running, scale),
+                                   self._value_to_x(center_x, half_width, next_running, scale),
+                                   y, main_h, color)
+      running = next_running
+
+    oppose_x = self._value_to_x(center_x, half_width, oppose_sum, scale)
+    total_x = self._value_to_x(center_x, half_width, total, scale)
+    rl.draw_line(oppose_x, int(y - 5), oppose_x, int(oppose_y + oppose_h + 5), COLORS.MUTED)
+    rl.draw_line(total_x, int(y - 11), total_x, int(y + main_h + 11), COLORS.BAR_MARKER)
+    rl.draw_circle(total_x, int(y + main_h / 2), 9.0, COLORS.BAR_MARKER)
+
+  def _draw_signed_single_bar(self, x: float, y: float, width: float, height: float, value: float, limit: float = 1.0) -> None:
+    center_x = int(x + width / 2)
+    half_width = int(width / 2 - 10)
+    clipped = _clamp(value, -limit, limit)
+    end_x = int(center_x + clipped / limit * half_width)
+    bar_x = min(center_x, end_x)
+    bar_w = abs(end_x - center_x)
+
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, height), 0.14, 8, COLORS.BAR_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, height), 0.14, 8, 2, COLORS.BORDER)
+    rl.draw_line(center_x, int(y - 7), center_x, int(y + height + 7), COLORS.BAR_ZERO)
+    if bar_w > 0:
+      rl.draw_rectangle(bar_x, int(y + 6), bar_w, int(height - 12), COLORS.BAR_CMD)
+    rl.draw_line(end_x, int(y - 11), end_x, int(y + height + 11), COLORS.BAR_MARKER)
+    rl.draw_circle(end_x, int(y + height / 2), 9.0, COLORS.BAR_MARKER)
+
+  def _draw_bar_legend(self, x: float, y: float, values: list[tuple[str, float, rl.Color]]) -> None:
+    cursor_x = x
+    for label, value, color in values:
+      rl.draw_rectangle(int(cursor_x), int(y + 5), 18, 18, color)
+      rl.draw_text_ex(self._font_medium, f"{label} {value:+.2f}", rl.Vector2(cursor_x + 26, y),
+                      FONT_SIZES.tiny, 0, COLORS.WHITE)
+      cursor_x += 165
+
+  def _draw_steering_wheel(self, x: float, y: float, radius: float) -> None:
+    # Hyundai Creta-inspired wheel rendered entirely in the HUD. Only visual telemetry.
+    # steeringAngleDeg is the actual steering-wheel rotation (not tire steering angle).
+    angle_deg = float(ui_state.sm['carState'].steeringAngleDeg)
+    angle = math.radians(-angle_deg)
+    cx, cy = int(x), int(y)
+    r = float(radius)
+    leather = rl.Color(33, 34, 36, 255)
+    leather_edge = rl.Color(75, 76, 79, 255)
+    silver = rl.Color(163, 169, 175, 255)
+    silver_edge = rl.Color(210, 213, 216, 255)
+    spoke_black = rl.Color(47, 48, 52, 255)
+    hub = rl.Color(39, 40, 44, 255)
+
+    def pt(px: float, py: float) -> rl.Vector2:
+      # Coordinates are relative to the wheel center in units of its radius.
+      px, py = px * r, py * r
+      return rl.Vector2(cx + math.cos(angle) * px - math.sin(angle) * py,
+                        cy + math.sin(angle) * px + math.cos(angle) * py)
+
+    def polygon(vertices: list[tuple[float, float]], color: rl.Color) -> None:
+      # Triangle fan to keep the drawing compatible with pyray/raylib.
+      center = pt(*vertices[0])
+      for idx in range(1, len(vertices) - 1):
+        rl.draw_triangle(center, pt(*vertices[idx]), pt(*vertices[idx + 1]), color)
+
+    # Flat-bottom Creta rim. The wheel silhouette rotates with the steering angle.
+    # The lower circular section is clipped to a straight chord at local y=0.82.
+    rim_points = []
+    for idx in range(97):
+      theta = 2.0 * math.pi * idx / 96
+      rim_points.append(pt(math.cos(theta), min(math.sin(theta), 0.82)))
+    for start, end in zip(rim_points, rim_points[1:]):
+      rl.draw_line_ex(start, end, max(3.0, r * 0.21), leather_edge)
+      rl.draw_line_ex(start, end, max(2.0, r * 0.17), leather)
+
+    def mirrored_polygon(left_vertices: list[tuple[float, float]], color: rl.Color) -> None:
+      # Reflect all local X coordinates for exact vertical symmetry.
+      # Reverse the mirrored winding so both halves render with the same triangle facing.
+      polygon(left_vertices, color)
+      polygon([(-px, py) for px, py in reversed(left_vertices)], color)
+
+    # Mirror the main spokes, but retain the Creta's asymmetric lower detail.
+    mirrored_polygon([(-0.39, 0.18), (-0.72, 0.60), (-0.57, 0.80), (-0.18, 0.45)], silver)
+    mirrored_polygon([(-0.34, 0.23), (-0.65, 0.63), (-0.54, 0.70), (-0.15, 0.39)], silver_edge)
+    # Small asymmetric accent on the right lower spoke (wheel-local geometry).
+    polygon([(0.36, 0.44), (0.52, 0.66), (0.58, 0.71), (0.44, 0.48)], spoke_black)
+
+    # Symmetric horizontal black multifunction-button housings.
+    mirrored_polygon([(-0.83, -0.29), (-0.38, -0.34), (-0.32, 0.20), (-0.79, 0.16)], spoke_black)
+    for side in (-1, 1):
+      for py in (-0.19, -0.04, 0.10):
+        rl.draw_line_ex(pt(side * 0.48, py), pt(side * 0.69, py), max(1.0, r * 0.012), silver)
+
+    # Soft rounded center boss with a prominent elliptical Hyundai emblem.
+    rl.draw_circle(cx, cy, r * 0.45, leather_edge)
+    rl.draw_circle(cx, cy, r * 0.428, hub)
+    rl.draw_circle_lines(cx, cy, r * 0.425, leather)
+    # Centered oval and mirror-symmetric stylized H (wheel-local coordinates).
+    ellipse_points = []
+    for i in range(33):
+      theta = 2 * math.pi * i / 32
+      ellipse_points.append(pt(0.29 * math.cos(theta), 0.15 * math.sin(theta)))
+    for p0, p1 in zip(ellipse_points, ellipse_points[1:]):
+      rl.draw_line_ex(p0, p1, max(2.0, r * 0.028), silver_edge)
+    emblem_width = max(2.0, r * 0.032)
+    rl.draw_line_ex(pt(-0.14, -0.12), pt(-0.09, 0.12), emblem_width, silver_edge)
+    rl.draw_line_ex(pt(0.14, -0.12), pt(0.09, 0.12), emblem_width, silver_edge)
+    rl.draw_line_ex(pt(-0.12, 0.0), pt(0.12, 0.0), emblem_width, silver_edge)
+
+    rl.draw_text_ex(self._font_medium, "STEERING WHEEL", rl.Vector2(cx - radius, cy + radius + 12),
+                    FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_bold, f"{angle_deg:+.1f} deg", rl.Vector2(cx - radius, cy + radius + 50),
+                    FONT_SIZES.row_label, 0, COLORS.WHITE)
+
+  def _draw_torque_arc(self, cx: float, cy: float, radius: float, torque_model: float) -> None:
+    # Display-only normalized model torque: zero at 12 o'clock.
+    # Positive values sweep clockwise on the right, negative values counterclockwise.
+    # Full scale (+/-1) reaches the bottom of its respective semicircle.
+    arc_radius = radius * 1.19
+    stroke = max(7.0, radius * 0.105)
+    track = rl.Color(85, 85, 85, 150)
+    value = _clamp(torque_model, -1.0, 1.0)
+
+    def point(theta: float) -> rl.Vector2:
+      return rl.Vector2(cx + arc_radius * math.sin(theta),
+                        cy - arc_radius * math.cos(theta))
+
+    def sweep(start: float, end: float, color: rl.Color, thickness: float) -> None:
+      steps = max(1, int(abs(end - start) / (math.pi / 70.0)))
+      previous = point(start)
+      for idx in range(1, steps + 1):
+        current = point(start + (end - start) * idx / steps)
+        rl.draw_line_ex(previous, current, thickness, color)
+        previous = current
+
+    sweep(-math.pi, math.pi, track, max(3.0, stroke * 0.46))
+    sweep(0.0, value * math.pi, COLORS.BAR_CMD, stroke)
+    end = point(value * math.pi)
+    rl.draw_circle(int(end.x), int(end.y), max(4.0, stroke * 0.58), COLORS.BAR_MARKER)
+
+  def _draw_legends(self, x: float, y: float, width: float, values: dict[str, float],
+                    components: list[tuple[str, float, rl.Color]], lat_total: float,
+                    torque_model: float, torque_op: float) -> None:
+    rl.draw_text_ex(self._font_bold, "LIVE COMPONENTS", rl.Vector2(x, y), FONT_SIZES.section, 0, COLORS.WHITE)
+    col_w = width / 2
+    for idx, (label, value, color) in enumerate(components):
+      col = idx % 2
+      row = idx // 2
+      sx = x + col * col_w
+      sy = y + 52 + row * 50
+      rl.draw_rectangle(int(sx), int(sy + 6), 24, 24, color)
+      rl.draw_text_ex(self._font_medium, f"{label} {value:+.3f}", rl.Vector2(sx + 36, sy),
+                      FONT_SIZES.section, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, f"PID+FF {lat_total:+.3f} m/s²", rl.Vector2(x, y + 168),
+                    FONT_SIZES.section, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, f"MODEL {torque_model:+.3f}    OP {torque_op:+.3f}",
+                    rl.Vector2(x, y + 214), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_medium, "TUNING VALUES", rl.Vector2(x, y + 282),
+                    FONT_SIZES.section, 0, COLORS.MUTED)
+    entries = (
+      ("LAT", "latAccelFactor"), ("F", "friction"), ("MAX", "maxLatAccel"),
+      ("KP", "kpScale"), ("KI", "kiScale"), ("KD", "kdGain"), ("FF", "ffScale"),
     )
+    for idx, (label, key) in enumerate(entries):
+      col = idx % 4
+      row = idx // 4
+      rl.draw_text_ex(self._font_medium, f"{label} {values[key]:.2f}",
+                      rl.Vector2(x + col * width / 4, y + 326 + row * 45),
+                      FONT_SIZES.small, 0, COLORS.WHITE_TRANSLUCENT)
 
-    set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(self.set_speed))
-    speed_text_width = measure_text_cached(self._font_bold, set_speed_text, FONT_SIZES.set_speed).x
-    rl.draw_text_ex(
-      self._font_bold,
-      set_speed_text,
-      rl.Vector2(x + (set_speed_width - speed_text_width) / 2, y + 77),
-      FONT_SIZES.set_speed,
-      0,
-      set_speed_color,
+  def _filter_display_signals(self, signals: dict[str, float]) -> dict[str, float]:
+    # Time-based exponential smoothing, independent of rendering frame rate.
+    # This is exclusively for telemetry rendering; the steering controller stays untouched.
+    now = time.monotonic()
+    dt = 0.0 if self._display_filter_time is None else max(0.0, now - self._display_filter_time)
+    self._display_filter_time = now
+    if dt > 1.0:  # Don't animate stale data after the UI has been paused.
+      self._display_filter_values.clear()
+    tau = 0.35  # seconds; 63% response in 350 ms
+    alpha = 1.0 - math.exp(-min(dt, 1.0) / tau) if dt > 0.0 else 1.0
+    for key, raw in signals.items():
+      if not math.isfinite(raw):
+        continue
+      previous = self._display_filter_values.get(key)
+      self._display_filter_values[key] = raw if previous is None else previous + alpha * (raw - previous)
+    return {key: self._display_filter_values.get(key, raw) for key, raw in signals.items()}
+
+  def _draw_command_composition(self, x: float, y: float, width: float, height: float,
+                                values: dict[str, float]) -> None:
+    sm = ui_state.sm
+    lateral_state = sm['controlsState'].lateralControlState
+    if lateral_state.which() != "torqueState":
+      self._display_filter_values.clear()
+      self._display_filter_time = None
+      rl.draw_text_ex(self._font_medium, "Waiting for torqueState", rl.Vector2(x, y),
+                      FONT_SIZES.section, 0, COLORS.MUTED)
+      return
+
+    torque_state = lateral_state.torqueState
+    # Smooth the individual contributions (not their sum), so the displayed
+    # total remains the exact sum of the displayed P/I/D/FF components.
+    raw_signals = {
+      "P": float(torque_state.p),
+      "I": float(torque_state.i),
+      "D": float(torque_state.d),
+      "FF": float(torque_state.f),
+      "torque_op": float(sm['carControl'].actuators.torque),
+    }
+    display = self._filter_display_signals(raw_signals)
+    components = [
+      ("P", display["P"], COLORS.BAR_P),
+      ("I", display["I"], COLORS.BAR_I),
+      ("D", display["D"], COLORS.BAR_D),
+      ("FF", display["FF"], COLORS.BAR_F),
+    ]
+    lat_total = sum(value for _, value, _ in components)
+    torque_op = display["torque_op"]
+    torque_model = -torque_op
+
+    rl.draw_text_ex(self._font_medium, "PID + FF  |  lateral acceleration (m/s²)", rl.Vector2(x, y),
+                    FONT_SIZES.section, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "Aligned terms / opposing terms", rl.Vector2(x, y + 36),
+                    FONT_SIZES.small, 0, COLORS.MUTED)
+    # First two tracks share the same acceleration scale and sign convention.
+    self._draw_signed_component_bar(x, y + 78, width, components, lat_total)
+
+    # The normalized torque is now a circular gauge around the steering wheel,
+    # rather than a redundant third horizontal bar.
+    bottom_y = y + 265
+    legend_width = width * 0.49
+    self._draw_legends(x, bottom_y, legend_width, values, components, lat_total, torque_model, torque_op)
+    remaining_h = max(240.0, height - (bottom_y - y))
+    wheel_radius = min(width * 0.13, remaining_h * 0.34, 185.0)
+    wheel_cx = x + width * 0.75
+    wheel_cy = bottom_y + wheel_radius * 1.28
+    self._draw_steering_wheel(wheel_cx, wheel_cy, wheel_radius)
+    self._draw_torque_arc(wheel_cx, wheel_cy, wheel_radius, torque_model)
+
+  def _draw_tune_controls_overlay(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
+    overlay_h = 486
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, overlay_h), 0.05, 10, COLORS.OVERLAY_BG)
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, overlay_h), 0.05, 10, 2, COLORS.BORDER)
+
+    self._plot_button.render(rl.Rectangle(x + width - 314, y + 16, 144, 72))
+    self._tune_reset_button.render(rl.Rectangle(x + width - 160, y + 16, 144, 72))
+    rl.draw_text_ex(self._font_bold, "EDIT GAINS", rl.Vector2(x + 24, y + 22), FONT_SIZES.title, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, "Plus/minus controls are temporary; press PLOT to return to the full plot view.",
+                    rl.Vector2(x + 24, y + 96), FONT_SIZES.subtitle, 0, COLORS.WHITE_TRANSLUCENT)
+
+    col_gap = 28
+    col_w = (width - 48 - col_gap) / 2
+    left_x = x + 24
+    right_x = left_x + col_w + col_gap
+    rows_y = y + 152
+
+    rl.draw_text_ex(self._font_medium, "MODEL / LIMIT", rl.Vector2(left_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_medium, "PID / FF", rl.Vector2(right_x, rows_y), FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
+
+    row_gap = 14
+    row_h = 76
+    rows = (
+      (("LAT", "latAccelFactor", "accel-to-torque model"), ("KP", "kpScale", "P gain scale")),
+      (("F", "friction", "friction in FF"), ("KI", "kiScale", "I gain scale")),
+      (("MAX", "maxLatAccel", "request accel cap"), ("KD", "kdGain", "D gain on accel-error rate")),
+      (("", "latAccelFactor", ""), ("FF", "ffScale", "feedforward scale")),
     )
+    for idx, (left, right) in enumerate(rows):
+      row_y = rows_y + 42 + idx * (row_h + row_gap)
+      if left[0]:
+        self._draw_tune_row(left_x, row_y, col_w, left[0], left[1], values[left[1]], left[2])
+      self._draw_tune_row(right_x, row_y, col_w, right[0], right[1], values[right[1]], right[2])
 
-  def _draw_current_speed(self, rect: rl.Rectangle) -> None:
-    """Draw the current vehicle speed and unit."""
-    speed_text = str(round(self.speed))
-    speed_text_size = measure_text_cached(self._font_bold, speed_text, FONT_SIZES.current_speed)
-    speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
-    rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
+  def _draw_torque_tune_panel(self, rect: rl.Rectangle, values: dict[str, float]) -> None:
+    margin = 34
+    x = rect.x + margin
+    y = rect.y + margin
+    width = rect.width - 2 * margin
 
-    unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
-    unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
-    unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+    rl.draw_text_ex(self._font_bold, "TORQUE TUNE", rl.Vector2(x, y), FONT_SIZES.title, 0, COLORS.WHITE)
+    if not self._show_tune_controls:
+      self._edit_button.render(rl.Rectangle(x + width - 164, y + 4, 150, 72))
+
+    self._draw_command_composition(x, y + 100, width, rect.height - 140, values)
+
+    if self._show_tune_controls:
+      self._draw_tune_controls_overlay(x, y + 92, width, values)

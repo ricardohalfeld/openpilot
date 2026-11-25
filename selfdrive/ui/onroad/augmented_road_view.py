@@ -5,8 +5,6 @@ from cereal import log, messaging
 from msgq.visionipc import VisionStreamType
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
-from openpilot.selfdrive.ui.onroad.alert_renderer import AlertRenderer
-from openpilot.selfdrive.ui.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.onroad.cameraview import CameraView
@@ -46,8 +44,6 @@ class AugmentedRoadView(CameraView):
 
     self.model_renderer = ModelRenderer()
     self._hud_renderer = HudRenderer()
-    self.alert_renderer = AlertRenderer()
-    self.driver_state_renderer = DriverStateRenderer()
 
     # debug
     self._pm = messaging.PubMaster(['uiDebug'])
@@ -71,8 +67,6 @@ class AugmentedRoadView(CameraView):
       rect.height - 2 * UI_BORDER_SIZE,
     )
 
-    # Enable scissor mode to clip all rendering within content rectangle boundaries
-    # This creates a rendering viewport that prevents graphics from drawing outside the border
     rl.begin_scissor_mode(
       int(self._content_rect.x),
       int(self._content_rect.y),
@@ -80,19 +74,10 @@ class AugmentedRoadView(CameraView):
       int(self._content_rect.height)
     )
 
-    # Render the base camera view
+    # Render camera as the base layer, then let the fullscreen tuner own the onroad overlay.
     super()._render(rect)
-
-    # Draw all UI overlays
-    self.model_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
-    self.alert_renderer.render(self._content_rect)
-    self.driver_state_renderer.render(self._content_rect)
 
-    # Custom UI extension point - add custom overlays here
-    # Use self._content_rect for positioning within camera bounds
-
-    # End clipping region
     rl.end_scissor_mode()
 
     # Draw colored border based on driving state
@@ -108,7 +93,6 @@ class AugmentedRoadView(CameraView):
       self._click_callback()
 
   def _handle_mouse_release(self, _):
-    # We only call click callback on press if not interacting with HUD
     pass
 
   def _draw_border(self, rect: rl.Rectangle):
