@@ -12,23 +12,30 @@ from openpilot.system.ui.widgets import Widget
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
+STALE_SECONDS_FULL_TRANSPARENT = 5.0
+STOPPED_SPEED_THRESHOLD = 0.01
 
 
 @dataclass(frozen=True)
 class UIConfig:
-  header_height: int = 300
+  header_height: int = 430
   border_size: int = 30
   button_size: int = 192
   set_speed_width_metric: int = 200
   set_speed_width_imperial: int = 172
   set_speed_height: int = 204
   wheel_icon_size: int = 144
+  freshness_marker_radius: int = 18
+  freshness_marker_spacing: int = 150
+  active_marker_ring_width: int = 5
 
 
 @dataclass(frozen=True)
 class FontSizes:
   current_speed: int = 176
   speed_unit: int = 66
+  speed_source: int = 42
+  gps_marker: int = 34
   max_speed: int = 40
   set_speed: int = 90
 
@@ -47,8 +54,10 @@ class Colors:
   BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
   BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
-  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 114)
+  HEADER_GRADIENT_START = rl.Color(0, 0, 0, 150)
   HEADER_GRADIENT_END = rl.BLANK
+  FRESH_GREEN = rl.Color(40, 220, 80, 255)
+  UNAVAILABLE = rl.Color(40, 220, 80, 0)
 
 
 UI_CONFIG = UIConfig()
@@ -64,6 +73,8 @@ class HudRenderer(Widget):
     self.is_cruise_available: bool = True
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
+    self.speed_source: str = "ODOMETRY"
+    self.active_marker: str = "ODO"
     self.v_ego_cluster_seen: bool = False
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -72,6 +83,35 @@ class HudRenderer(Widget):
 
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
 
+  @staticmethod
+  def _service_age_seconds(sm, service: str) -> float | None:
+    recv_frame = sm.recv_frame[service]
+    if recv_frame <= 0 or recv_frame < ui_state.started_frame:
+      return None
+    return max(0, sm.frame - recv_frame) / max(gui_app.target_fps, 1)
+
+  @staticmethod
+  def _freshness_color(age_seconds: float | None) -> rl.Color:
+    if age_seconds is None:
+      return COLORS.UNAVAILABLE
+
+    stale_fraction = min(max(age_seconds / STALE_SECONDS_FULL_TRANSPARENT, 0.0), 1.0)
+    return rl.Color(
+      COLORS.FRESH_GREEN.r,
+      COLORS.FRESH_GREEN.g,
+      COLORS.FRESH_GREEN.b,
+      round(COLORS.FRESH_GREEN.a * (1.0 - stale_fraction)),
+    )
+
+  def _gps_service_has_fix(self, service: str) -> bool:
+    sm = ui_state.sm
+    return sm.alive[service] and sm.valid[service] and sm[service].hasFix
+
+  def _set_active_speed_source(self, marker: str, source: str, v_ego: float) -> float:
+    self.active_marker = marker
+    self.speed_source = source
+    return v_ego
+
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
     sm = ui_state.sm
@@ -79,6 +119,8 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self.speed_source = "ODOMETRY"
+      self.active_marker = "ODO"
       return
 
     controls_state = sm['controlsState']
@@ -96,7 +138,17 @@ class HudRenderer(Widget):
 
     v_ego_cluster = car_state.vEgoCluster
     self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
-    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+    v_ego_odometry = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+
+    if abs(v_ego_odometry) <= STOPPED_SPEED_THRESHOLD:
+      v_ego = self._set_active_speed_source("ODO", "ODOMETRY", 0.0)
+    elif self._gps_service_has_fix("gpsLocationExternal"):
+      v_ego = self._set_active_speed_source("EXT", "GPS EXT", sm["gpsLocationExternal"].speed)
+    elif self._gps_service_has_fix("gpsLocation"):
+      v_ego = self._set_active_speed_source("GPS", "GPS", sm["gpsLocation"].speed)
+    else:
+      v_ego = self._set_active_speed_source("ODO", "ODOMETRY", v_ego_odometry)
+
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
@@ -167,6 +219,45 @@ class HudRenderer(Widget):
       set_speed_color,
     )
 
+  def _draw_text_centered(self, rect: rl.Rectangle, text: str, y: float, font_size: int, color: rl.Color) -> None:
+    text_size = measure_text_cached(self._font_medium, text, font_size)
+    text_pos = rl.Vector2(rect.x + rect.width / 2 - text_size.x / 2, y - text_size.y / 2)
+    rl.draw_text_ex(self._font_medium, text, text_pos, font_size, 0, color)
+
+  def _draw_active_ring(self, center_x: float, center_y: float) -> None:
+    for offset in range(UI_CONFIG.active_marker_ring_width):
+      rl.draw_circle_lines(
+        int(center_x),
+        int(center_y),
+        UI_CONFIG.freshness_marker_radius + 4 + offset,
+        COLORS.WHITE,
+      )
+
+  def _draw_freshness_marker(self, center_x: float, center_y: float, label: str, service: str) -> None:
+    sm = ui_state.sm
+    color = self._freshness_color(self._service_age_seconds(sm, service))
+
+    if color.a > 0:
+      rl.draw_circle(int(center_x), int(center_y), UI_CONFIG.freshness_marker_radius, color)
+      rl.draw_circle_lines(int(center_x), int(center_y), UI_CONFIG.freshness_marker_radius, COLORS.WHITE_TRANSLUCENT)
+
+    if self.active_marker == label:
+      self._draw_active_ring(center_x, center_y)
+
+    label_size = measure_text_cached(self._font_medium, label, FONT_SIZES.gps_marker)
+    label_pos = rl.Vector2(center_x - label_size.x / 2, center_y + UI_CONFIG.freshness_marker_radius + 10)
+    label_color = COLORS.WHITE if self.active_marker == label else COLORS.WHITE_TRANSLUCENT
+    rl.draw_text_ex(self._font_medium, label, label_pos, FONT_SIZES.gps_marker, 0, label_color)
+
+  def _draw_freshness_markers(self, rect: rl.Rectangle) -> None:
+    center_x = rect.x + rect.width / 2
+    center_y = 385
+    spacing = UI_CONFIG.freshness_marker_spacing
+
+    self._draw_freshness_marker(center_x - spacing, center_y, "ODO", "carState")
+    self._draw_freshness_marker(center_x, center_y, "GPS", "gpsLocation")
+    self._draw_freshness_marker(center_x + spacing, center_y, "EXT", "gpsLocationExternal")
+
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
     speed_text = str(round(self.speed))
@@ -178,3 +269,6 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+    self._draw_text_centered(rect, self.speed_source, 348, FONT_SIZES.speed_source, COLORS.WHITE_TRANSLUCENT)
+    self._draw_freshness_markers(rect)
