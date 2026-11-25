@@ -330,11 +330,15 @@ class HudRenderer(Widget):
       for idx in range(1, len(vertices) - 1):
         rl.draw_triangle(center, pt(*vertices[idx]), pt(*vertices[idx + 1]), color)
 
-    # Thick padded rim; draw the opening over its center before adding the spokes.
-    rl.draw_circle(cx, cy, r, leather_edge)
-    rl.draw_circle(cx, cy, r * 0.966, leather)
-    rl.draw_circle(cx, cy, r * 0.800, COLORS.PANEL_BG)
-    rl.draw_circle_lines(cx, cy, r * 0.805, leather_edge)
+    # Flat-bottom Creta rim. The wheel silhouette rotates with the steering angle.
+    # The lower circular section is clipped to a straight chord at local y=0.82.
+    rim_points = []
+    for idx in range(97):
+      theta = 2.0 * math.pi * idx / 96
+      rim_points.append(pt(math.cos(theta), min(math.sin(theta), 0.82)))
+    for start, end in zip(rim_points, rim_points[1:]):
+      rl.draw_line_ex(start, end, max(3.0, r * 0.21), leather_edge)
+      rl.draw_line_ex(start, end, max(2.0, r * 0.17), leather)
 
     def mirrored_polygon(left_vertices: list[tuple[float, float]], color: rl.Color) -> None:
       # Reflect all local X coordinates for exact vertical symmetry.
@@ -342,9 +346,11 @@ class HudRenderer(Widget):
       polygon(left_vertices, color)
       polygon([(-px, py) for px, py in reversed(left_vertices)], color)
 
-    # Both lower silver Y-spokes are generated from precisely the same geometry.
+    # Mirror the main spokes, but retain the Creta's asymmetric lower detail.
     mirrored_polygon([(-0.39, 0.18), (-0.72, 0.60), (-0.57, 0.80), (-0.18, 0.45)], silver)
     mirrored_polygon([(-0.34, 0.23), (-0.65, 0.63), (-0.54, 0.70), (-0.15, 0.39)], silver_edge)
+    # Small asymmetric accent on the right lower spoke (wheel-local geometry).
+    polygon([(0.36, 0.44), (0.52, 0.66), (0.58, 0.71), (0.44, 0.48)], spoke_black)
 
     # Symmetric horizontal black multifunction-button housings.
     mirrored_polygon([(-0.83, -0.29), (-0.38, -0.34), (-0.32, 0.20), (-0.79, 0.16)], spoke_black)
@@ -372,6 +378,32 @@ class HudRenderer(Widget):
                     FONT_SIZES.section, 0, COLORS.WHITE_TRANSLUCENT)
     rl.draw_text_ex(self._font_bold, f"{angle_deg:+.1f} deg", rl.Vector2(cx - radius, cy + radius + 50),
                     FONT_SIZES.row_label, 0, COLORS.WHITE)
+
+  def _draw_torque_arc(self, cx: float, cy: float, radius: float, torque_model: float) -> None:
+    # Display-only normalized model torque: zero at 12 o'clock.
+    # Positive values sweep clockwise on the right, negative values counterclockwise.
+    # Full scale (+/-1) reaches the bottom of its respective semicircle.
+    arc_radius = radius * 1.19
+    stroke = max(7.0, radius * 0.105)
+    track = rl.Color(85, 85, 85, 150)
+    value = _clamp(torque_model, -1.0, 1.0)
+
+    def point(theta: float) -> rl.Vector2:
+      return rl.Vector2(cx + arc_radius * math.sin(theta),
+                        cy - arc_radius * math.cos(theta))
+
+    def sweep(start: float, end: float, color: rl.Color, thickness: float) -> None:
+      steps = max(1, int(abs(end - start) / (math.pi / 70.0)))
+      previous = point(start)
+      for idx in range(1, steps + 1):
+        current = point(start + (end - start) * idx / steps)
+        rl.draw_line_ex(previous, current, thickness, color)
+        previous = current
+
+    sweep(-math.pi, math.pi, track, max(3.0, stroke * 0.46))
+    sweep(0.0, value * math.pi, COLORS.BAR_CMD, stroke)
+    end = point(value * math.pi)
+    rl.draw_circle(int(end.x), int(end.y), max(4.0, stroke * 0.58), COLORS.BAR_MARKER)
 
   def _draw_legends(self, x: float, y: float, width: float, values: dict[str, float],
                     components: list[tuple[str, float, rl.Color]], lat_total: float,
@@ -459,18 +491,17 @@ class HudRenderer(Widget):
     # First two tracks share the same acceleration scale and sign convention.
     self._draw_signed_component_bar(x, y + 78, width, components, lat_total)
 
-    torque_y = y + 260
-    rl.draw_text_ex(self._font_medium, "MODEL TORQUE  |  normalized command before OP sign flip",
-                    rl.Vector2(x, torque_y), FONT_SIZES.section, 0, COLORS.WHITE)
-    # The torque track has its own fixed [-1, +1] scale, unlike the acceleration tracks.
-    self._draw_signed_single_bar(x, torque_y + 48, width, 74, torque_model)
-
-    bottom_y = y + 410
+    # The normalized torque is now a circular gauge around the steering wheel,
+    # rather than a redundant third horizontal bar.
+    bottom_y = y + 265
     legend_width = width * 0.49
     self._draw_legends(x, bottom_y, legend_width, values, components, lat_total, torque_model, torque_op)
     remaining_h = max(240.0, height - (bottom_y - y))
-    wheel_radius = min(width * 0.095, remaining_h * 0.30, 150.0)
-    self._draw_steering_wheel(x + width * 0.75, bottom_y + wheel_radius + 24, wheel_radius)
+    wheel_radius = min(width * 0.13, remaining_h * 0.34, 185.0)
+    wheel_cx = x + width * 0.75
+    wheel_cy = bottom_y + wheel_radius * 1.28
+    self._draw_steering_wheel(wheel_cx, wheel_cy, wheel_radius)
+    self._draw_torque_arc(wheel_cx, wheel_cy, wheel_radius, torque_model)
 
   def _draw_tune_controls_overlay(self, x: float, y: float, width: float, values: dict[str, float]) -> None:
     overlay_h = 486
